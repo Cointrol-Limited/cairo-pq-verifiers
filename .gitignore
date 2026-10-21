@@ -20,3 +20,8 @@ pq-accounts/signers/**/*-key.json
 **/my-falcon-key.json
 # pythonref: fetched third-party references
 pythonref/vendor/
+
+# Break-track fuzz data (regenerate with pythonref/gen_fuzz.py)
+crates/falcon_512/tests/data/
+pythonref/fixtures/fuzz.json
+crates/falcon_512/tests/bench_fuzz.cairo
