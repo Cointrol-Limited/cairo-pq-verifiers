@@ -3,9 +3,9 @@
 #
 #   sandbox/run.sh --image                 build the falcon-sandbox image
 #   sandbox/run.sh --warm                  fill the dependency cache volume (network on)
-#   sandbox/run.sh NAME PATCH [CMD...]     copy HEAD of this repo to a scratch tree,
-#                                          `git apply` PATCH, run CMD offline (default:
-#                                          the mix gas benchmark)
+#   sandbox/run.sh NAME PATCH [CMD...]     copy this working tree to a scratch tree,
+#                                          `git apply` PATCH (may be empty), run CMD
+#                                          offline (default: the mix gas benchmark)
 #
 # Scratch trees live in ~/.cache/falcon-sandbox/work/NAME (Colima only shares $HOME with
 # its VM). Containers run as an unprivileged user with no network and no capabilities,
@@ -19,9 +19,9 @@ ROOT="$HOME/.cache/falcon-sandbox"
 
 harden=(--rm --cap-drop ALL --security-opt no-new-privileges --pids-limit 1024 --memory 6g)
 
-tree_from_head() {  # $1 = destination
+tree_from_head() {  # $1 = destination; the working tree (tracked + untracked, not ignored)
   rm -rf "$1" && mkdir -p "$1"
-  git -C "$REPO" archive HEAD | tar -x -C "$1"
+  (cd "$REPO" && git ls-files -co --exclude-standard -z | xargs -0 tar -cf -) | tar -x -C "$1"
 }
 
 case "${1:-}" in

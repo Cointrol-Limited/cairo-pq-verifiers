@@ -92,28 +92,35 @@ pub impl Falcon512DirectVerifier of PqSignatureVerifier {
 /// validation caps, so even the standards-compliant variant is deployable.
 pub impl Falcon512ShakeVerifier of PqSignatureVerifier {
     fn verify(message_hash: felt252, public_key: Span<felt252>, signature: Span<felt252>) -> bool {
-        if public_key.len() != PUBKEY_FELTS || signature.len() != SIG_FELTS {
+        // Q51: two direct returns (no materialised bool).
+        if public_key.len() != PUBKEY_FELTS {
             return false;
         }
-        let h_ntt = match packing::unpack_512_u16(public_key) {
+        // Q51: the signature is split by three pops (s1, salt, t) and an emptiness test, which
+        // together check its length is SIG_FELTS: no `.at`, no `.slice`, no pop in the unpackers.
+        let mut sig = signature;
+        let s1_slots = match sig.multi_pop_front::<29>() {
+            Some(b) => b,
+            None => { return false; },
+        };
+        let [salt_a,salt_b] = match sig.multi_pop_front::<2>() {
+            Some(b) => (*b).unbox(),
+            None => { return false; },
+        };
+        let t_slots = match sig.multi_pop_front::<29>() {
+            Some(b) => b,
+            None => { return false; },
+        };
+        if !sig.is_empty() {
+            return false;
+        }
+        let msg_point = match hash_to_point::hash_to_point_shake_512_raw(message_hash,salt_a,salt_b) {
             Some(v) => v,
             None => { return false; },
         };
-        let s1 = match packing::unpack_512_u16(signature.slice(0, 29)) {
-            Some(v) => v,
-            None => { return false; },
-        };
-        let salt_a = *signature.at(29);
-        let salt_b = *signature.at(30);
-        let mul_hint = match packing::unpack_512_u16(signature.slice(31, 29)) {
-            Some(v) => v,
-            None => { return false; },
-        };
-        let msg_point = match hash_to_point::hash_to_point_shake_512(message_hash, salt_a, salt_b) {
-            Some(v) => v,
-            None => { return false; },
-        };
-        falcon::verify_512_with_hint_u16(s1.span(), h_ntt.span(), mul_hint.span(), msg_point.span())
+        // s1 and t unpacked into their transforms, the bound, and the key check, in one
+        // function that keeps both transforms on its stack.
+        packing::verify_tail(s1_slots,t_slots,msg_point.span(),public_key)
     }
 }
 

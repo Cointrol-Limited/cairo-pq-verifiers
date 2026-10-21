@@ -10,31 +10,99 @@
 //! rely on callers to enforce that precondition; the fixed operation graph computes
 //! the Falcon evaluation order and returns 512 reduced coefficients.
 
-use corelib_imports::bounded_int::{BoundedInt, DivRemHelper, UnitInt, bounded_int_div_rem, upcast};
+use corelib_imports::bounded_int::{
+    BoundedInt,DivRemHelper,UnitInt,bounded_int_div_rem as reduce_div_rem,upcast as bounded_upcast,
+};
 use corelib_imports::integer::{U128sFromFelt252Result, u128s_from_felt252};
 
-type Falcon512Zq = BoundedInt<0, 12288>;
+/// An unreduced transform output: the shifted value the generated graph computes, in
+/// `[0, 2^122)` (the generator's exact bound) and congruent mod q to the reduced output.
+use crate::L;
+
+/// The generated graph below converts each shifted output with `felt252_as_u128`,
+/// types it as `U128AsBounded` and reduces it with `bounded_int_div_rem` into a
+/// `Falcon512Zq`. Here those names are local and keep the output as a `L`;
+/// `upcast` reduces it when an entry point asks for `u16` or `felt252`.
+type Falcon512Zq = L;
+type U128AsBounded = L;
+type Falcon512Residue = BoundedInt<0,12288>;
 type Falcon512Q = UnitInt<12289>;
-type U128AsBounded = BoundedInt<0, 340282366920938463463374607431768211455>;
-
-const FALCON512_Q_NZ: NonZero<Falcon512Q> = 12289;
-const SHIFT: felt252 = 2305326338167692580222332728864932068;
-
-impl Falcon512FastDivRemImpl of DivRemHelper<U128AsBounded, Falcon512Q> {
-    type DivT = BoundedInt<0, 27689996494502275487295516920153650>;
-    type RemT = Falcon512Zq;
-}
+type ShiftedU128 = BoundedInt<0,340282366920938463463374607431768211455>;
 
 #[inline(always)]
-fn felt252_as_u128(value: felt252) -> u128 {
-    // Exact generated bounds put canonical shifted outputs below 2^128.
-    match u128s_from_felt252(value) {
-        U128sFromFelt252Result::Narrow(low) => low,
-        U128sFromFelt252Result::Wide((_, low)) => low,
+fn bounded_int_div_rem(value: L,_modulus: NonZero<Falcon512Q>) -> ((),L) {
+    ((),value)
+}
+
+/// Conversions used by the generated code and its entry points.
+pub trait NttOutput<F,T> {
+    fn convert(value: F) -> T;
+}
+
+impl NttOutputShifted of NttOutput<felt252,L> {
+    #[inline(always)]
+    fn convert(value: felt252) -> L {
+        L { value }
+    }
+}
+
+impl NttOutputLazy of NttOutput<L,L> {
+    #[inline(always)]
+    fn convert(value: L) -> L {
+        value
     }
 }
 
 #[inline(always)]
+fn reduce_lazy(value: L) -> Falcon512Residue {
+    // Exact generated bounds put canonical shifted outputs below 2^128.
+    let wide: ShiftedU128 = match u128s_from_felt252(value.value) {
+        U128sFromFelt252Result::Narrow(low) => bounded_upcast(low),
+        U128sFromFelt252Result::Wide((_,low)) => bounded_upcast(low),
+    };
+    let (_,r) = reduce_div_rem(wide,FALCON512_Q_NZ);
+    r
+}
+
+impl NttOutputU16 of NttOutput<L,u16> {
+    #[inline(always)]
+    fn convert(value: L) -> u16 {
+        bounded_upcast(reduce_lazy(value))
+    }
+}
+
+impl NttOutputFelt of NttOutput<L,felt252> {
+    #[inline(always)]
+    fn convert(value: L) -> felt252 {
+        bounded_upcast(reduce_lazy(value))
+    }
+}
+
+fn upcast<F,T,impl C: NttOutput<F,T>>(value: F) -> T {
+    C::convert(value)
+}
+
+const FALCON512_Q_NZ: NonZero<Falcon512Q> = 12289;
+/// Added to every output through input 0 (weight exactly 1 in every output of the graph),
+/// once per transform instead of once per output.
+const LAZY_SHIFT: felt252 = 2305326338167692580222332728864932068;
+/// The generated graph's per-output shift, now zero.
+const SHIFT: felt252 = 0;
+
+impl Falcon512FastDivRemImpl of DivRemHelper<ShiftedU128,Falcon512Q> {
+    type DivT = BoundedInt<0, 27689996494502275487295516920153650>;
+    type RemT = Falcon512Residue;
+}
+
+#[inline(always)]
+fn felt252_as_u128(value: felt252) -> felt252 {
+    // The shifted output stays a felt252 here; `reduce_lazy` converts it when reducing.
+    value
+}
+
+#[inline(always)]
+/// Inputs 256..511 come in already multiplied by 1479, the first layer's twiddle (zeta^256),
+/// so a caller can fold that product into how it produces them.
 fn ntt_falcon512_fast_inner(
     f0: felt252,
     f1: felt252,
@@ -1062,10 +1130,10 @@ fn ntt_falcon512_fast_inner(
     Falcon512Zq,
     Falcon512Zq,
 ) {
-    let v0 = f256 * 1479;
+    let v0 = f256;
     let v1 = f0 + v0;
     let v2 = f0 - v0;
-    let v3 = f384 * 1479;
+    let v3 = f384;
     let v4 = f128 + v3;
     let v5 = f128 - v3;
     let v6 = v4 * 4043;
@@ -1074,10 +1142,10 @@ fn ntt_falcon512_fast_inner(
     let v9 = v5 * 5146;
     let v10 = v2 + v9;
     let v11 = v2 - v9;
-    let v12 = f320 * 1479;
+    let v12 = f320;
     let v13 = f64 + v12;
     let v14 = f64 - v12;
-    let v15 = f448 * 1479;
+    let v15 = f448;
     let v16 = f192 + v15;
     let v17 = f192 - v15;
     let v18 = v16 * 4043;
@@ -1098,10 +1166,10 @@ fn ntt_falcon512_fast_inner(
     let v33 = v23 * 1305;
     let v34 = v11 + v33;
     let v35 = v11 - v33;
-    let v36 = f288 * 1479;
+    let v36 = f288;
     let v37 = f32 + v36;
     let v38 = f32 - v36;
-    let v39 = f416 * 1479;
+    let v39 = f416;
     let v40 = f160 + v39;
     let v41 = f160 - v39;
     let v42 = v40 * 4043;
@@ -1110,10 +1178,10 @@ fn ntt_falcon512_fast_inner(
     let v45 = v41 * 5146;
     let v46 = v38 + v45;
     let v47 = v38 - v45;
-    let v48 = f352 * 1479;
+    let v48 = f352;
     let v49 = f96 + v48;
     let v50 = f96 - v48;
-    let v51 = f480 * 1479;
+    let v51 = f480;
     let v52 = f224 + v51;
     let v53 = f224 - v51;
     let v54 = v52 * 4043;
@@ -1158,10 +1226,10 @@ fn ntt_falcon512_fast_inner(
     let v93 = v71 * 3542;
     let v94 = v35 + v93;
     let v95 = v35 - v93;
-    let v96 = f272 * 1479;
+    let v96 = f272;
     let v97 = f16 + v96;
     let v98 = f16 - v96;
-    let v99 = f400 * 1479;
+    let v99 = f400;
     let v100 = f144 + v99;
     let v101 = f144 - v99;
     let v102 = v100 * 4043;
@@ -1170,10 +1238,10 @@ fn ntt_falcon512_fast_inner(
     let v105 = v101 * 5146;
     let v106 = v98 + v105;
     let v107 = v98 - v105;
-    let v108 = f336 * 1479;
+    let v108 = f336;
     let v109 = f80 + v108;
     let v110 = f80 - v108;
-    let v111 = f464 * 1479;
+    let v111 = f464;
     let v112 = f208 + v111;
     let v113 = f208 - v111;
     let v114 = v112 * 4043;
@@ -1194,10 +1262,10 @@ fn ntt_falcon512_fast_inner(
     let v129 = v119 * 1305;
     let v130 = v107 + v129;
     let v131 = v107 - v129;
-    let v132 = f304 * 1479;
+    let v132 = f304;
     let v133 = f48 + v132;
     let v134 = f48 - v132;
-    let v135 = f432 * 1479;
+    let v135 = f432;
     let v136 = f176 + v135;
     let v137 = f176 - v135;
     let v138 = v136 * 4043;
@@ -1206,10 +1274,10 @@ fn ntt_falcon512_fast_inner(
     let v141 = v137 * 5146;
     let v142 = v134 + v141;
     let v143 = v134 - v141;
-    let v144 = f368 * 1479;
+    let v144 = f368;
     let v145 = f112 + v144;
     let v146 = f112 - v144;
-    let v147 = f496 * 1479;
+    let v147 = f496;
     let v148 = f240 + v147;
     let v149 = f240 - v147;
     let v150 = v148 * 4043;
@@ -1302,10 +1370,10 @@ fn ntt_falcon512_fast_inner(
     let v237 = v191 * 2639;
     let v238 = v95 + v237;
     let v239 = v95 - v237;
-    let v240 = f264 * 1479;
+    let v240 = f264;
     let v241 = f8 + v240;
     let v242 = f8 - v240;
-    let v243 = f392 * 1479;
+    let v243 = f392;
     let v244 = f136 + v243;
     let v245 = f136 - v243;
     let v246 = v244 * 4043;
@@ -1314,10 +1382,10 @@ fn ntt_falcon512_fast_inner(
     let v249 = v245 * 5146;
     let v250 = v242 + v249;
     let v251 = v242 - v249;
-    let v252 = f328 * 1479;
+    let v252 = f328;
     let v253 = f72 + v252;
     let v254 = f72 - v252;
-    let v255 = f456 * 1479;
+    let v255 = f456;
     let v256 = f200 + v255;
     let v257 = f200 - v255;
     let v258 = v256 * 4043;
@@ -1338,10 +1406,10 @@ fn ntt_falcon512_fast_inner(
     let v273 = v263 * 1305;
     let v274 = v251 + v273;
     let v275 = v251 - v273;
-    let v276 = f296 * 1479;
+    let v276 = f296;
     let v277 = f40 + v276;
     let v278 = f40 - v276;
-    let v279 = f424 * 1479;
+    let v279 = f424;
     let v280 = f168 + v279;
     let v281 = f168 - v279;
     let v282 = v280 * 4043;
@@ -1350,10 +1418,10 @@ fn ntt_falcon512_fast_inner(
     let v285 = v281 * 5146;
     let v286 = v278 + v285;
     let v287 = v278 - v285;
-    let v288 = f360 * 1479;
+    let v288 = f360;
     let v289 = f104 + v288;
     let v290 = f104 - v288;
-    let v291 = f488 * 1479;
+    let v291 = f488;
     let v292 = f232 + v291;
     let v293 = f232 - v291;
     let v294 = v292 * 4043;
@@ -1398,10 +1466,10 @@ fn ntt_falcon512_fast_inner(
     let v333 = v311 * 3542;
     let v334 = v275 + v333;
     let v335 = v275 - v333;
-    let v336 = f280 * 1479;
+    let v336 = f280;
     let v337 = f24 + v336;
     let v338 = f24 - v336;
-    let v339 = f408 * 1479;
+    let v339 = f408;
     let v340 = f152 + v339;
     let v341 = f152 - v339;
     let v342 = v340 * 4043;
@@ -1410,10 +1478,10 @@ fn ntt_falcon512_fast_inner(
     let v345 = v341 * 5146;
     let v346 = v338 + v345;
     let v347 = v338 - v345;
-    let v348 = f344 * 1479;
+    let v348 = f344;
     let v349 = f88 + v348;
     let v350 = f88 - v348;
-    let v351 = f472 * 1479;
+    let v351 = f472;
     let v352 = f216 + v351;
     let v353 = f216 - v351;
     let v354 = v352 * 4043;
@@ -1434,10 +1502,10 @@ fn ntt_falcon512_fast_inner(
     let v369 = v359 * 1305;
     let v370 = v347 + v369;
     let v371 = v347 - v369;
-    let v372 = f312 * 1479;
+    let v372 = f312;
     let v373 = f56 + v372;
     let v374 = f56 - v372;
-    let v375 = f440 * 1479;
+    let v375 = f440;
     let v376 = f184 + v375;
     let v377 = f184 - v375;
     let v378 = v376 * 4043;
@@ -1446,10 +1514,10 @@ fn ntt_falcon512_fast_inner(
     let v381 = v377 * 5146;
     let v382 = v374 + v381;
     let v383 = v374 - v381;
-    let v384 = f376 * 1479;
+    let v384 = f376;
     let v385 = f120 + v384;
     let v386 = f120 - v384;
-    let v387 = f504 * 1479;
+    let v387 = f504;
     let v388 = f248 + v387;
     let v389 = f248 - v387;
     let v390 = v388 * 4043;
@@ -1638,10 +1706,10 @@ fn ntt_falcon512_fast_inner(
     let v573 = v479 * 790;
     let v574 = v239 + v573;
     let v575 = v239 - v573;
-    let v576 = f260 * 1479;
+    let v576 = f260;
     let v577 = f4 + v576;
     let v578 = f4 - v576;
-    let v579 = f388 * 1479;
+    let v579 = f388;
     let v580 = f132 + v579;
     let v581 = f132 - v579;
     let v582 = v580 * 4043;
@@ -1650,10 +1718,10 @@ fn ntt_falcon512_fast_inner(
     let v585 = v581 * 5146;
     let v586 = v578 + v585;
     let v587 = v578 - v585;
-    let v588 = f324 * 1479;
+    let v588 = f324;
     let v589 = f68 + v588;
     let v590 = f68 - v588;
-    let v591 = f452 * 1479;
+    let v591 = f452;
     let v592 = f196 + v591;
     let v593 = f196 - v591;
     let v594 = v592 * 4043;
@@ -1674,10 +1742,10 @@ fn ntt_falcon512_fast_inner(
     let v609 = v599 * 1305;
     let v610 = v587 + v609;
     let v611 = v587 - v609;
-    let v612 = f292 * 1479;
+    let v612 = f292;
     let v613 = f36 + v612;
     let v614 = f36 - v612;
-    let v615 = f420 * 1479;
+    let v615 = f420;
     let v616 = f164 + v615;
     let v617 = f164 - v615;
     let v618 = v616 * 4043;
@@ -1686,10 +1754,10 @@ fn ntt_falcon512_fast_inner(
     let v621 = v617 * 5146;
     let v622 = v614 + v621;
     let v623 = v614 - v621;
-    let v624 = f356 * 1479;
+    let v624 = f356;
     let v625 = f100 + v624;
     let v626 = f100 - v624;
-    let v627 = f484 * 1479;
+    let v627 = f484;
     let v628 = f228 + v627;
     let v629 = f228 - v627;
     let v630 = v628 * 4043;
@@ -1734,10 +1802,10 @@ fn ntt_falcon512_fast_inner(
     let v669 = v647 * 3542;
     let v670 = v611 + v669;
     let v671 = v611 - v669;
-    let v672 = f276 * 1479;
+    let v672 = f276;
     let v673 = f20 + v672;
     let v674 = f20 - v672;
-    let v675 = f404 * 1479;
+    let v675 = f404;
     let v676 = f148 + v675;
     let v677 = f148 - v675;
     let v678 = v676 * 4043;
@@ -1746,10 +1814,10 @@ fn ntt_falcon512_fast_inner(
     let v681 = v677 * 5146;
     let v682 = v674 + v681;
     let v683 = v674 - v681;
-    let v684 = f340 * 1479;
+    let v684 = f340;
     let v685 = f84 + v684;
     let v686 = f84 - v684;
-    let v687 = f468 * 1479;
+    let v687 = f468;
     let v688 = f212 + v687;
     let v689 = f212 - v687;
     let v690 = v688 * 4043;
@@ -1770,10 +1838,10 @@ fn ntt_falcon512_fast_inner(
     let v705 = v695 * 1305;
     let v706 = v683 + v705;
     let v707 = v683 - v705;
-    let v708 = f308 * 1479;
+    let v708 = f308;
     let v709 = f52 + v708;
     let v710 = f52 - v708;
-    let v711 = f436 * 1479;
+    let v711 = f436;
     let v712 = f180 + v711;
     let v713 = f180 - v711;
     let v714 = v712 * 4043;
@@ -1782,10 +1850,10 @@ fn ntt_falcon512_fast_inner(
     let v717 = v713 * 5146;
     let v718 = v710 + v717;
     let v719 = v710 - v717;
-    let v720 = f372 * 1479;
+    let v720 = f372;
     let v721 = f116 + v720;
     let v722 = f116 - v720;
-    let v723 = f500 * 1479;
+    let v723 = f500;
     let v724 = f244 + v723;
     let v725 = f244 - v723;
     let v726 = v724 * 4043;
@@ -1878,10 +1946,10 @@ fn ntt_falcon512_fast_inner(
     let v813 = v767 * 2639;
     let v814 = v671 + v813;
     let v815 = v671 - v813;
-    let v816 = f268 * 1479;
+    let v816 = f268;
     let v817 = f12 + v816;
     let v818 = f12 - v816;
-    let v819 = f396 * 1479;
+    let v819 = f396;
     let v820 = f140 + v819;
     let v821 = f140 - v819;
     let v822 = v820 * 4043;
@@ -1890,10 +1958,10 @@ fn ntt_falcon512_fast_inner(
     let v825 = v821 * 5146;
     let v826 = v818 + v825;
     let v827 = v818 - v825;
-    let v828 = f332 * 1479;
+    let v828 = f332;
     let v829 = f76 + v828;
     let v830 = f76 - v828;
-    let v831 = f460 * 1479;
+    let v831 = f460;
     let v832 = f204 + v831;
     let v833 = f204 - v831;
     let v834 = v832 * 4043;
@@ -1914,10 +1982,10 @@ fn ntt_falcon512_fast_inner(
     let v849 = v839 * 1305;
     let v850 = v827 + v849;
     let v851 = v827 - v849;
-    let v852 = f300 * 1479;
+    let v852 = f300;
     let v853 = f44 + v852;
     let v854 = f44 - v852;
-    let v855 = f428 * 1479;
+    let v855 = f428;
     let v856 = f172 + v855;
     let v857 = f172 - v855;
     let v858 = v856 * 4043;
@@ -1926,10 +1994,10 @@ fn ntt_falcon512_fast_inner(
     let v861 = v857 * 5146;
     let v862 = v854 + v861;
     let v863 = v854 - v861;
-    let v864 = f364 * 1479;
+    let v864 = f364;
     let v865 = f108 + v864;
     let v866 = f108 - v864;
-    let v867 = f492 * 1479;
+    let v867 = f492;
     let v868 = f236 + v867;
     let v869 = f236 - v867;
     let v870 = v868 * 4043;
@@ -1974,10 +2042,10 @@ fn ntt_falcon512_fast_inner(
     let v909 = v887 * 3542;
     let v910 = v851 + v909;
     let v911 = v851 - v909;
-    let v912 = f284 * 1479;
+    let v912 = f284;
     let v913 = f28 + v912;
     let v914 = f28 - v912;
-    let v915 = f412 * 1479;
+    let v915 = f412;
     let v916 = f156 + v915;
     let v917 = f156 - v915;
     let v918 = v916 * 4043;
@@ -1986,10 +2054,10 @@ fn ntt_falcon512_fast_inner(
     let v921 = v917 * 5146;
     let v922 = v914 + v921;
     let v923 = v914 - v921;
-    let v924 = f348 * 1479;
+    let v924 = f348;
     let v925 = f92 + v924;
     let v926 = f92 - v924;
-    let v927 = f476 * 1479;
+    let v927 = f476;
     let v928 = f220 + v927;
     let v929 = f220 - v927;
     let v930 = v928 * 4043;
@@ -2010,10 +2078,10 @@ fn ntt_falcon512_fast_inner(
     let v945 = v935 * 1305;
     let v946 = v923 + v945;
     let v947 = v923 - v945;
-    let v948 = f316 * 1479;
+    let v948 = f316;
     let v949 = f60 + v948;
     let v950 = f60 - v948;
-    let v951 = f444 * 1479;
+    let v951 = f444;
     let v952 = f188 + v951;
     let v953 = f188 - v951;
     let v954 = v952 * 4043;
@@ -2022,10 +2090,10 @@ fn ntt_falcon512_fast_inner(
     let v957 = v953 * 5146;
     let v958 = v950 + v957;
     let v959 = v950 - v957;
-    let v960 = f380 * 1479;
+    let v960 = f380;
     let v961 = f124 + v960;
     let v962 = f124 - v960;
-    let v963 = f508 * 1479;
+    let v963 = f508;
     let v964 = f252 + v963;
     let v965 = f252 - v963;
     let v966 = v964 * 4043;
@@ -2406,10 +2474,10 @@ fn ntt_falcon512_fast_inner(
     let v1341 = v1151 * 1428;
     let v1342 = v575 + v1341;
     let v1343 = v575 - v1341;
-    let v1344 = f258 * 1479;
+    let v1344 = f258;
     let v1345 = f2 + v1344;
     let v1346 = f2 - v1344;
-    let v1347 = f386 * 1479;
+    let v1347 = f386;
     let v1348 = f130 + v1347;
     let v1349 = f130 - v1347;
     let v1350 = v1348 * 4043;
@@ -2418,10 +2486,10 @@ fn ntt_falcon512_fast_inner(
     let v1353 = v1349 * 5146;
     let v1354 = v1346 + v1353;
     let v1355 = v1346 - v1353;
-    let v1356 = f322 * 1479;
+    let v1356 = f322;
     let v1357 = f66 + v1356;
     let v1358 = f66 - v1356;
-    let v1359 = f450 * 1479;
+    let v1359 = f450;
     let v1360 = f194 + v1359;
     let v1361 = f194 - v1359;
     let v1362 = v1360 * 4043;
@@ -2442,10 +2510,10 @@ fn ntt_falcon512_fast_inner(
     let v1377 = v1367 * 1305;
     let v1378 = v1355 + v1377;
     let v1379 = v1355 - v1377;
-    let v1380 = f290 * 1479;
+    let v1380 = f290;
     let v1381 = f34 + v1380;
     let v1382 = f34 - v1380;
-    let v1383 = f418 * 1479;
+    let v1383 = f418;
     let v1384 = f162 + v1383;
     let v1385 = f162 - v1383;
     let v1386 = v1384 * 4043;
@@ -2454,10 +2522,10 @@ fn ntt_falcon512_fast_inner(
     let v1389 = v1385 * 5146;
     let v1390 = v1382 + v1389;
     let v1391 = v1382 - v1389;
-    let v1392 = f354 * 1479;
+    let v1392 = f354;
     let v1393 = f98 + v1392;
     let v1394 = f98 - v1392;
-    let v1395 = f482 * 1479;
+    let v1395 = f482;
     let v1396 = f226 + v1395;
     let v1397 = f226 - v1395;
     let v1398 = v1396 * 4043;
@@ -2502,10 +2570,10 @@ fn ntt_falcon512_fast_inner(
     let v1437 = v1415 * 3542;
     let v1438 = v1379 + v1437;
     let v1439 = v1379 - v1437;
-    let v1440 = f274 * 1479;
+    let v1440 = f274;
     let v1441 = f18 + v1440;
     let v1442 = f18 - v1440;
-    let v1443 = f402 * 1479;
+    let v1443 = f402;
     let v1444 = f146 + v1443;
     let v1445 = f146 - v1443;
     let v1446 = v1444 * 4043;
@@ -2514,10 +2582,10 @@ fn ntt_falcon512_fast_inner(
     let v1449 = v1445 * 5146;
     let v1450 = v1442 + v1449;
     let v1451 = v1442 - v1449;
-    let v1452 = f338 * 1479;
+    let v1452 = f338;
     let v1453 = f82 + v1452;
     let v1454 = f82 - v1452;
-    let v1455 = f466 * 1479;
+    let v1455 = f466;
     let v1456 = f210 + v1455;
     let v1457 = f210 - v1455;
     let v1458 = v1456 * 4043;
@@ -2538,10 +2606,10 @@ fn ntt_falcon512_fast_inner(
     let v1473 = v1463 * 1305;
     let v1474 = v1451 + v1473;
     let v1475 = v1451 - v1473;
-    let v1476 = f306 * 1479;
+    let v1476 = f306;
     let v1477 = f50 + v1476;
     let v1478 = f50 - v1476;
-    let v1479 = f434 * 1479;
+    let v1479 = f434;
     let v1480 = f178 + v1479;
     let v1481 = f178 - v1479;
     let v1482 = v1480 * 4043;
@@ -2550,10 +2618,10 @@ fn ntt_falcon512_fast_inner(
     let v1485 = v1481 * 5146;
     let v1486 = v1478 + v1485;
     let v1487 = v1478 - v1485;
-    let v1488 = f370 * 1479;
+    let v1488 = f370;
     let v1489 = f114 + v1488;
     let v1490 = f114 - v1488;
-    let v1491 = f498 * 1479;
+    let v1491 = f498;
     let v1492 = f242 + v1491;
     let v1493 = f242 - v1491;
     let v1494 = v1492 * 4043;
@@ -2646,10 +2714,10 @@ fn ntt_falcon512_fast_inner(
     let v1581 = v1535 * 2639;
     let v1582 = v1439 + v1581;
     let v1583 = v1439 - v1581;
-    let v1584 = f266 * 1479;
+    let v1584 = f266;
     let v1585 = f10 + v1584;
     let v1586 = f10 - v1584;
-    let v1587 = f394 * 1479;
+    let v1587 = f394;
     let v1588 = f138 + v1587;
     let v1589 = f138 - v1587;
     let v1590 = v1588 * 4043;
@@ -2658,10 +2726,10 @@ fn ntt_falcon512_fast_inner(
     let v1593 = v1589 * 5146;
     let v1594 = v1586 + v1593;
     let v1595 = v1586 - v1593;
-    let v1596 = f330 * 1479;
+    let v1596 = f330;
     let v1597 = f74 + v1596;
     let v1598 = f74 - v1596;
-    let v1599 = f458 * 1479;
+    let v1599 = f458;
     let v1600 = f202 + v1599;
     let v1601 = f202 - v1599;
     let v1602 = v1600 * 4043;
@@ -2682,10 +2750,10 @@ fn ntt_falcon512_fast_inner(
     let v1617 = v1607 * 1305;
     let v1618 = v1595 + v1617;
     let v1619 = v1595 - v1617;
-    let v1620 = f298 * 1479;
+    let v1620 = f298;
     let v1621 = f42 + v1620;
     let v1622 = f42 - v1620;
-    let v1623 = f426 * 1479;
+    let v1623 = f426;
     let v1624 = f170 + v1623;
     let v1625 = f170 - v1623;
     let v1626 = v1624 * 4043;
@@ -2694,10 +2762,10 @@ fn ntt_falcon512_fast_inner(
     let v1629 = v1625 * 5146;
     let v1630 = v1622 + v1629;
     let v1631 = v1622 - v1629;
-    let v1632 = f362 * 1479;
+    let v1632 = f362;
     let v1633 = f106 + v1632;
     let v1634 = f106 - v1632;
-    let v1635 = f490 * 1479;
+    let v1635 = f490;
     let v1636 = f234 + v1635;
     let v1637 = f234 - v1635;
     let v1638 = v1636 * 4043;
@@ -2742,10 +2810,10 @@ fn ntt_falcon512_fast_inner(
     let v1677 = v1655 * 3542;
     let v1678 = v1619 + v1677;
     let v1679 = v1619 - v1677;
-    let v1680 = f282 * 1479;
+    let v1680 = f282;
     let v1681 = f26 + v1680;
     let v1682 = f26 - v1680;
-    let v1683 = f410 * 1479;
+    let v1683 = f410;
     let v1684 = f154 + v1683;
     let v1685 = f154 - v1683;
     let v1686 = v1684 * 4043;
@@ -2754,10 +2822,10 @@ fn ntt_falcon512_fast_inner(
     let v1689 = v1685 * 5146;
     let v1690 = v1682 + v1689;
     let v1691 = v1682 - v1689;
-    let v1692 = f346 * 1479;
+    let v1692 = f346;
     let v1693 = f90 + v1692;
     let v1694 = f90 - v1692;
-    let v1695 = f474 * 1479;
+    let v1695 = f474;
     let v1696 = f218 + v1695;
     let v1697 = f218 - v1695;
     let v1698 = v1696 * 4043;
@@ -2778,10 +2846,10 @@ fn ntt_falcon512_fast_inner(
     let v1713 = v1703 * 1305;
     let v1714 = v1691 + v1713;
     let v1715 = v1691 - v1713;
-    let v1716 = f314 * 1479;
+    let v1716 = f314;
     let v1717 = f58 + v1716;
     let v1718 = f58 - v1716;
-    let v1719 = f442 * 1479;
+    let v1719 = f442;
     let v1720 = f186 + v1719;
     let v1721 = f186 - v1719;
     let v1722 = v1720 * 4043;
@@ -2790,10 +2858,10 @@ fn ntt_falcon512_fast_inner(
     let v1725 = v1721 * 5146;
     let v1726 = v1718 + v1725;
     let v1727 = v1718 - v1725;
-    let v1728 = f378 * 1479;
+    let v1728 = f378;
     let v1729 = f122 + v1728;
     let v1730 = f122 - v1728;
-    let v1731 = f506 * 1479;
+    let v1731 = f506;
     let v1732 = f250 + v1731;
     let v1733 = f250 - v1731;
     let v1734 = v1732 * 4043;
@@ -2982,10 +3050,10 @@ fn ntt_falcon512_fast_inner(
     let v1917 = v1823 * 790;
     let v1918 = v1583 + v1917;
     let v1919 = v1583 - v1917;
-    let v1920 = f262 * 1479;
+    let v1920 = f262;
     let v1921 = f6 + v1920;
     let v1922 = f6 - v1920;
-    let v1923 = f390 * 1479;
+    let v1923 = f390;
     let v1924 = f134 + v1923;
     let v1925 = f134 - v1923;
     let v1926 = v1924 * 4043;
@@ -2994,10 +3062,10 @@ fn ntt_falcon512_fast_inner(
     let v1929 = v1925 * 5146;
     let v1930 = v1922 + v1929;
     let v1931 = v1922 - v1929;
-    let v1932 = f326 * 1479;
+    let v1932 = f326;
     let v1933 = f70 + v1932;
     let v1934 = f70 - v1932;
-    let v1935 = f454 * 1479;
+    let v1935 = f454;
     let v1936 = f198 + v1935;
     let v1937 = f198 - v1935;
     let v1938 = v1936 * 4043;
@@ -3018,10 +3086,10 @@ fn ntt_falcon512_fast_inner(
     let v1953 = v1943 * 1305;
     let v1954 = v1931 + v1953;
     let v1955 = v1931 - v1953;
-    let v1956 = f294 * 1479;
+    let v1956 = f294;
     let v1957 = f38 + v1956;
     let v1958 = f38 - v1956;
-    let v1959 = f422 * 1479;
+    let v1959 = f422;
     let v1960 = f166 + v1959;
     let v1961 = f166 - v1959;
     let v1962 = v1960 * 4043;
@@ -3030,10 +3098,10 @@ fn ntt_falcon512_fast_inner(
     let v1965 = v1961 * 5146;
     let v1966 = v1958 + v1965;
     let v1967 = v1958 - v1965;
-    let v1968 = f358 * 1479;
+    let v1968 = f358;
     let v1969 = f102 + v1968;
     let v1970 = f102 - v1968;
-    let v1971 = f486 * 1479;
+    let v1971 = f486;
     let v1972 = f230 + v1971;
     let v1973 = f230 - v1971;
     let v1974 = v1972 * 4043;
@@ -3078,10 +3146,10 @@ fn ntt_falcon512_fast_inner(
     let v2013 = v1991 * 3542;
     let v2014 = v1955 + v2013;
     let v2015 = v1955 - v2013;
-    let v2016 = f278 * 1479;
+    let v2016 = f278;
     let v2017 = f22 + v2016;
     let v2018 = f22 - v2016;
-    let v2019 = f406 * 1479;
+    let v2019 = f406;
     let v2020 = f150 + v2019;
     let v2021 = f150 - v2019;
     let v2022 = v2020 * 4043;
@@ -3090,10 +3158,10 @@ fn ntt_falcon512_fast_inner(
     let v2025 = v2021 * 5146;
     let v2026 = v2018 + v2025;
     let v2027 = v2018 - v2025;
-    let v2028 = f342 * 1479;
+    let v2028 = f342;
     let v2029 = f86 + v2028;
     let v2030 = f86 - v2028;
-    let v2031 = f470 * 1479;
+    let v2031 = f470;
     let v2032 = f214 + v2031;
     let v2033 = f214 - v2031;
     let v2034 = v2032 * 4043;
@@ -3114,10 +3182,10 @@ fn ntt_falcon512_fast_inner(
     let v2049 = v2039 * 1305;
     let v2050 = v2027 + v2049;
     let v2051 = v2027 - v2049;
-    let v2052 = f310 * 1479;
+    let v2052 = f310;
     let v2053 = f54 + v2052;
     let v2054 = f54 - v2052;
-    let v2055 = f438 * 1479;
+    let v2055 = f438;
     let v2056 = f182 + v2055;
     let v2057 = f182 - v2055;
     let v2058 = v2056 * 4043;
@@ -3126,10 +3194,10 @@ fn ntt_falcon512_fast_inner(
     let v2061 = v2057 * 5146;
     let v2062 = v2054 + v2061;
     let v2063 = v2054 - v2061;
-    let v2064 = f374 * 1479;
+    let v2064 = f374;
     let v2065 = f118 + v2064;
     let v2066 = f118 - v2064;
-    let v2067 = f502 * 1479;
+    let v2067 = f502;
     let v2068 = f246 + v2067;
     let v2069 = f246 - v2067;
     let v2070 = v2068 * 4043;
@@ -3222,10 +3290,10 @@ fn ntt_falcon512_fast_inner(
     let v2157 = v2111 * 2639;
     let v2158 = v2015 + v2157;
     let v2159 = v2015 - v2157;
-    let v2160 = f270 * 1479;
+    let v2160 = f270;
     let v2161 = f14 + v2160;
     let v2162 = f14 - v2160;
-    let v2163 = f398 * 1479;
+    let v2163 = f398;
     let v2164 = f142 + v2163;
     let v2165 = f142 - v2163;
     let v2166 = v2164 * 4043;
@@ -3234,10 +3302,10 @@ fn ntt_falcon512_fast_inner(
     let v2169 = v2165 * 5146;
     let v2170 = v2162 + v2169;
     let v2171 = v2162 - v2169;
-    let v2172 = f334 * 1479;
+    let v2172 = f334;
     let v2173 = f78 + v2172;
     let v2174 = f78 - v2172;
-    let v2175 = f462 * 1479;
+    let v2175 = f462;
     let v2176 = f206 + v2175;
     let v2177 = f206 - v2175;
     let v2178 = v2176 * 4043;
@@ -3258,10 +3326,10 @@ fn ntt_falcon512_fast_inner(
     let v2193 = v2183 * 1305;
     let v2194 = v2171 + v2193;
     let v2195 = v2171 - v2193;
-    let v2196 = f302 * 1479;
+    let v2196 = f302;
     let v2197 = f46 + v2196;
     let v2198 = f46 - v2196;
-    let v2199 = f430 * 1479;
+    let v2199 = f430;
     let v2200 = f174 + v2199;
     let v2201 = f174 - v2199;
     let v2202 = v2200 * 4043;
@@ -3270,10 +3338,10 @@ fn ntt_falcon512_fast_inner(
     let v2205 = v2201 * 5146;
     let v2206 = v2198 + v2205;
     let v2207 = v2198 - v2205;
-    let v2208 = f366 * 1479;
+    let v2208 = f366;
     let v2209 = f110 + v2208;
     let v2210 = f110 - v2208;
-    let v2211 = f494 * 1479;
+    let v2211 = f494;
     let v2212 = f238 + v2211;
     let v2213 = f238 - v2211;
     let v2214 = v2212 * 4043;
@@ -3318,10 +3386,10 @@ fn ntt_falcon512_fast_inner(
     let v2253 = v2231 * 3542;
     let v2254 = v2195 + v2253;
     let v2255 = v2195 - v2253;
-    let v2256 = f286 * 1479;
+    let v2256 = f286;
     let v2257 = f30 + v2256;
     let v2258 = f30 - v2256;
-    let v2259 = f414 * 1479;
+    let v2259 = f414;
     let v2260 = f158 + v2259;
     let v2261 = f158 - v2259;
     let v2262 = v2260 * 4043;
@@ -3330,10 +3398,10 @@ fn ntt_falcon512_fast_inner(
     let v2265 = v2261 * 5146;
     let v2266 = v2258 + v2265;
     let v2267 = v2258 - v2265;
-    let v2268 = f350 * 1479;
+    let v2268 = f350;
     let v2269 = f94 + v2268;
     let v2270 = f94 - v2268;
-    let v2271 = f478 * 1479;
+    let v2271 = f478;
     let v2272 = f222 + v2271;
     let v2273 = f222 - v2271;
     let v2274 = v2272 * 4043;
@@ -3354,10 +3422,10 @@ fn ntt_falcon512_fast_inner(
     let v2289 = v2279 * 1305;
     let v2290 = v2267 + v2289;
     let v2291 = v2267 - v2289;
-    let v2292 = f318 * 1479;
+    let v2292 = f318;
     let v2293 = f62 + v2292;
     let v2294 = f62 - v2292;
-    let v2295 = f446 * 1479;
+    let v2295 = f446;
     let v2296 = f190 + v2295;
     let v2297 = f190 - v2295;
     let v2298 = v2296 * 4043;
@@ -3366,10 +3434,10 @@ fn ntt_falcon512_fast_inner(
     let v2301 = v2297 * 5146;
     let v2302 = v2294 + v2301;
     let v2303 = v2294 - v2301;
-    let v2304 = f382 * 1479;
+    let v2304 = f382;
     let v2305 = f126 + v2304;
     let v2306 = f126 - v2304;
-    let v2307 = f510 * 1479;
+    let v2307 = f510;
     let v2308 = f254 + v2307;
     let v2309 = f254 - v2307;
     let v2310 = v2308 * 4043;
@@ -4134,10 +4202,10 @@ fn ntt_falcon512_fast_inner(
     let v3069 = v2687 * 2481;
     let v3070 = v1343 + v3069;
     let v3071 = v1343 - v3069;
-    let v3072 = f257 * 1479;
+    let v3072 = f257;
     let v3073 = f1 + v3072;
     let v3074 = f1 - v3072;
-    let v3075 = f385 * 1479;
+    let v3075 = f385;
     let v3076 = f129 + v3075;
     let v3077 = f129 - v3075;
     let v3078 = v3076 * 4043;
@@ -4146,10 +4214,10 @@ fn ntt_falcon512_fast_inner(
     let v3081 = v3077 * 5146;
     let v3082 = v3074 + v3081;
     let v3083 = v3074 - v3081;
-    let v3084 = f321 * 1479;
+    let v3084 = f321;
     let v3085 = f65 + v3084;
     let v3086 = f65 - v3084;
-    let v3087 = f449 * 1479;
+    let v3087 = f449;
     let v3088 = f193 + v3087;
     let v3089 = f193 - v3087;
     let v3090 = v3088 * 4043;
@@ -4170,10 +4238,10 @@ fn ntt_falcon512_fast_inner(
     let v3105 = v3095 * 1305;
     let v3106 = v3083 + v3105;
     let v3107 = v3083 - v3105;
-    let v3108 = f289 * 1479;
+    let v3108 = f289;
     let v3109 = f33 + v3108;
     let v3110 = f33 - v3108;
-    let v3111 = f417 * 1479;
+    let v3111 = f417;
     let v3112 = f161 + v3111;
     let v3113 = f161 - v3111;
     let v3114 = v3112 * 4043;
@@ -4182,10 +4250,10 @@ fn ntt_falcon512_fast_inner(
     let v3117 = v3113 * 5146;
     let v3118 = v3110 + v3117;
     let v3119 = v3110 - v3117;
-    let v3120 = f353 * 1479;
+    let v3120 = f353;
     let v3121 = f97 + v3120;
     let v3122 = f97 - v3120;
-    let v3123 = f481 * 1479;
+    let v3123 = f481;
     let v3124 = f225 + v3123;
     let v3125 = f225 - v3123;
     let v3126 = v3124 * 4043;
@@ -4230,10 +4298,10 @@ fn ntt_falcon512_fast_inner(
     let v3165 = v3143 * 3542;
     let v3166 = v3107 + v3165;
     let v3167 = v3107 - v3165;
-    let v3168 = f273 * 1479;
+    let v3168 = f273;
     let v3169 = f17 + v3168;
     let v3170 = f17 - v3168;
-    let v3171 = f401 * 1479;
+    let v3171 = f401;
     let v3172 = f145 + v3171;
     let v3173 = f145 - v3171;
     let v3174 = v3172 * 4043;
@@ -4242,10 +4310,10 @@ fn ntt_falcon512_fast_inner(
     let v3177 = v3173 * 5146;
     let v3178 = v3170 + v3177;
     let v3179 = v3170 - v3177;
-    let v3180 = f337 * 1479;
+    let v3180 = f337;
     let v3181 = f81 + v3180;
     let v3182 = f81 - v3180;
-    let v3183 = f465 * 1479;
+    let v3183 = f465;
     let v3184 = f209 + v3183;
     let v3185 = f209 - v3183;
     let v3186 = v3184 * 4043;
@@ -4266,10 +4334,10 @@ fn ntt_falcon512_fast_inner(
     let v3201 = v3191 * 1305;
     let v3202 = v3179 + v3201;
     let v3203 = v3179 - v3201;
-    let v3204 = f305 * 1479;
+    let v3204 = f305;
     let v3205 = f49 + v3204;
     let v3206 = f49 - v3204;
-    let v3207 = f433 * 1479;
+    let v3207 = f433;
     let v3208 = f177 + v3207;
     let v3209 = f177 - v3207;
     let v3210 = v3208 * 4043;
@@ -4278,10 +4346,10 @@ fn ntt_falcon512_fast_inner(
     let v3213 = v3209 * 5146;
     let v3214 = v3206 + v3213;
     let v3215 = v3206 - v3213;
-    let v3216 = f369 * 1479;
+    let v3216 = f369;
     let v3217 = f113 + v3216;
     let v3218 = f113 - v3216;
-    let v3219 = f497 * 1479;
+    let v3219 = f497;
     let v3220 = f241 + v3219;
     let v3221 = f241 - v3219;
     let v3222 = v3220 * 4043;
@@ -4374,10 +4442,10 @@ fn ntt_falcon512_fast_inner(
     let v3309 = v3263 * 2639;
     let v3310 = v3167 + v3309;
     let v3311 = v3167 - v3309;
-    let v3312 = f265 * 1479;
+    let v3312 = f265;
     let v3313 = f9 + v3312;
     let v3314 = f9 - v3312;
-    let v3315 = f393 * 1479;
+    let v3315 = f393;
     let v3316 = f137 + v3315;
     let v3317 = f137 - v3315;
     let v3318 = v3316 * 4043;
@@ -4386,10 +4454,10 @@ fn ntt_falcon512_fast_inner(
     let v3321 = v3317 * 5146;
     let v3322 = v3314 + v3321;
     let v3323 = v3314 - v3321;
-    let v3324 = f329 * 1479;
+    let v3324 = f329;
     let v3325 = f73 + v3324;
     let v3326 = f73 - v3324;
-    let v3327 = f457 * 1479;
+    let v3327 = f457;
     let v3328 = f201 + v3327;
     let v3329 = f201 - v3327;
     let v3330 = v3328 * 4043;
@@ -4410,10 +4478,10 @@ fn ntt_falcon512_fast_inner(
     let v3345 = v3335 * 1305;
     let v3346 = v3323 + v3345;
     let v3347 = v3323 - v3345;
-    let v3348 = f297 * 1479;
+    let v3348 = f297;
     let v3349 = f41 + v3348;
     let v3350 = f41 - v3348;
-    let v3351 = f425 * 1479;
+    let v3351 = f425;
     let v3352 = f169 + v3351;
     let v3353 = f169 - v3351;
     let v3354 = v3352 * 4043;
@@ -4422,10 +4490,10 @@ fn ntt_falcon512_fast_inner(
     let v3357 = v3353 * 5146;
     let v3358 = v3350 + v3357;
     let v3359 = v3350 - v3357;
-    let v3360 = f361 * 1479;
+    let v3360 = f361;
     let v3361 = f105 + v3360;
     let v3362 = f105 - v3360;
-    let v3363 = f489 * 1479;
+    let v3363 = f489;
     let v3364 = f233 + v3363;
     let v3365 = f233 - v3363;
     let v3366 = v3364 * 4043;
@@ -4470,10 +4538,10 @@ fn ntt_falcon512_fast_inner(
     let v3405 = v3383 * 3542;
     let v3406 = v3347 + v3405;
     let v3407 = v3347 - v3405;
-    let v3408 = f281 * 1479;
+    let v3408 = f281;
     let v3409 = f25 + v3408;
     let v3410 = f25 - v3408;
-    let v3411 = f409 * 1479;
+    let v3411 = f409;
     let v3412 = f153 + v3411;
     let v3413 = f153 - v3411;
     let v3414 = v3412 * 4043;
@@ -4482,10 +4550,10 @@ fn ntt_falcon512_fast_inner(
     let v3417 = v3413 * 5146;
     let v3418 = v3410 + v3417;
     let v3419 = v3410 - v3417;
-    let v3420 = f345 * 1479;
+    let v3420 = f345;
     let v3421 = f89 + v3420;
     let v3422 = f89 - v3420;
-    let v3423 = f473 * 1479;
+    let v3423 = f473;
     let v3424 = f217 + v3423;
     let v3425 = f217 - v3423;
     let v3426 = v3424 * 4043;
@@ -4506,10 +4574,10 @@ fn ntt_falcon512_fast_inner(
     let v3441 = v3431 * 1305;
     let v3442 = v3419 + v3441;
     let v3443 = v3419 - v3441;
-    let v3444 = f313 * 1479;
+    let v3444 = f313;
     let v3445 = f57 + v3444;
     let v3446 = f57 - v3444;
-    let v3447 = f441 * 1479;
+    let v3447 = f441;
     let v3448 = f185 + v3447;
     let v3449 = f185 - v3447;
     let v3450 = v3448 * 4043;
@@ -4518,10 +4586,10 @@ fn ntt_falcon512_fast_inner(
     let v3453 = v3449 * 5146;
     let v3454 = v3446 + v3453;
     let v3455 = v3446 - v3453;
-    let v3456 = f377 * 1479;
+    let v3456 = f377;
     let v3457 = f121 + v3456;
     let v3458 = f121 - v3456;
-    let v3459 = f505 * 1479;
+    let v3459 = f505;
     let v3460 = f249 + v3459;
     let v3461 = f249 - v3459;
     let v3462 = v3460 * 4043;
@@ -4710,10 +4778,10 @@ fn ntt_falcon512_fast_inner(
     let v3645 = v3551 * 790;
     let v3646 = v3311 + v3645;
     let v3647 = v3311 - v3645;
-    let v3648 = f261 * 1479;
+    let v3648 = f261;
     let v3649 = f5 + v3648;
     let v3650 = f5 - v3648;
-    let v3651 = f389 * 1479;
+    let v3651 = f389;
     let v3652 = f133 + v3651;
     let v3653 = f133 - v3651;
     let v3654 = v3652 * 4043;
@@ -4722,10 +4790,10 @@ fn ntt_falcon512_fast_inner(
     let v3657 = v3653 * 5146;
     let v3658 = v3650 + v3657;
     let v3659 = v3650 - v3657;
-    let v3660 = f325 * 1479;
+    let v3660 = f325;
     let v3661 = f69 + v3660;
     let v3662 = f69 - v3660;
-    let v3663 = f453 * 1479;
+    let v3663 = f453;
     let v3664 = f197 + v3663;
     let v3665 = f197 - v3663;
     let v3666 = v3664 * 4043;
@@ -4746,10 +4814,10 @@ fn ntt_falcon512_fast_inner(
     let v3681 = v3671 * 1305;
     let v3682 = v3659 + v3681;
     let v3683 = v3659 - v3681;
-    let v3684 = f293 * 1479;
+    let v3684 = f293;
     let v3685 = f37 + v3684;
     let v3686 = f37 - v3684;
-    let v3687 = f421 * 1479;
+    let v3687 = f421;
     let v3688 = f165 + v3687;
     let v3689 = f165 - v3687;
     let v3690 = v3688 * 4043;
@@ -4758,10 +4826,10 @@ fn ntt_falcon512_fast_inner(
     let v3693 = v3689 * 5146;
     let v3694 = v3686 + v3693;
     let v3695 = v3686 - v3693;
-    let v3696 = f357 * 1479;
+    let v3696 = f357;
     let v3697 = f101 + v3696;
     let v3698 = f101 - v3696;
-    let v3699 = f485 * 1479;
+    let v3699 = f485;
     let v3700 = f229 + v3699;
     let v3701 = f229 - v3699;
     let v3702 = v3700 * 4043;
@@ -4806,10 +4874,10 @@ fn ntt_falcon512_fast_inner(
     let v3741 = v3719 * 3542;
     let v3742 = v3683 + v3741;
     let v3743 = v3683 - v3741;
-    let v3744 = f277 * 1479;
+    let v3744 = f277;
     let v3745 = f21 + v3744;
     let v3746 = f21 - v3744;
-    let v3747 = f405 * 1479;
+    let v3747 = f405;
     let v3748 = f149 + v3747;
     let v3749 = f149 - v3747;
     let v3750 = v3748 * 4043;
@@ -4818,10 +4886,10 @@ fn ntt_falcon512_fast_inner(
     let v3753 = v3749 * 5146;
     let v3754 = v3746 + v3753;
     let v3755 = v3746 - v3753;
-    let v3756 = f341 * 1479;
+    let v3756 = f341;
     let v3757 = f85 + v3756;
     let v3758 = f85 - v3756;
-    let v3759 = f469 * 1479;
+    let v3759 = f469;
     let v3760 = f213 + v3759;
     let v3761 = f213 - v3759;
     let v3762 = v3760 * 4043;
@@ -4842,10 +4910,10 @@ fn ntt_falcon512_fast_inner(
     let v3777 = v3767 * 1305;
     let v3778 = v3755 + v3777;
     let v3779 = v3755 - v3777;
-    let v3780 = f309 * 1479;
+    let v3780 = f309;
     let v3781 = f53 + v3780;
     let v3782 = f53 - v3780;
-    let v3783 = f437 * 1479;
+    let v3783 = f437;
     let v3784 = f181 + v3783;
     let v3785 = f181 - v3783;
     let v3786 = v3784 * 4043;
@@ -4854,10 +4922,10 @@ fn ntt_falcon512_fast_inner(
     let v3789 = v3785 * 5146;
     let v3790 = v3782 + v3789;
     let v3791 = v3782 - v3789;
-    let v3792 = f373 * 1479;
+    let v3792 = f373;
     let v3793 = f117 + v3792;
     let v3794 = f117 - v3792;
-    let v3795 = f501 * 1479;
+    let v3795 = f501;
     let v3796 = f245 + v3795;
     let v3797 = f245 - v3795;
     let v3798 = v3796 * 4043;
@@ -4950,10 +5018,10 @@ fn ntt_falcon512_fast_inner(
     let v3885 = v3839 * 2639;
     let v3886 = v3743 + v3885;
     let v3887 = v3743 - v3885;
-    let v3888 = f269 * 1479;
+    let v3888 = f269;
     let v3889 = f13 + v3888;
     let v3890 = f13 - v3888;
-    let v3891 = f397 * 1479;
+    let v3891 = f397;
     let v3892 = f141 + v3891;
     let v3893 = f141 - v3891;
     let v3894 = v3892 * 4043;
@@ -4962,10 +5030,10 @@ fn ntt_falcon512_fast_inner(
     let v3897 = v3893 * 5146;
     let v3898 = v3890 + v3897;
     let v3899 = v3890 - v3897;
-    let v3900 = f333 * 1479;
+    let v3900 = f333;
     let v3901 = f77 + v3900;
     let v3902 = f77 - v3900;
-    let v3903 = f461 * 1479;
+    let v3903 = f461;
     let v3904 = f205 + v3903;
     let v3905 = f205 - v3903;
     let v3906 = v3904 * 4043;
@@ -4986,10 +5054,10 @@ fn ntt_falcon512_fast_inner(
     let v3921 = v3911 * 1305;
     let v3922 = v3899 + v3921;
     let v3923 = v3899 - v3921;
-    let v3924 = f301 * 1479;
+    let v3924 = f301;
     let v3925 = f45 + v3924;
     let v3926 = f45 - v3924;
-    let v3927 = f429 * 1479;
+    let v3927 = f429;
     let v3928 = f173 + v3927;
     let v3929 = f173 - v3927;
     let v3930 = v3928 * 4043;
@@ -4998,10 +5066,10 @@ fn ntt_falcon512_fast_inner(
     let v3933 = v3929 * 5146;
     let v3934 = v3926 + v3933;
     let v3935 = v3926 - v3933;
-    let v3936 = f365 * 1479;
+    let v3936 = f365;
     let v3937 = f109 + v3936;
     let v3938 = f109 - v3936;
-    let v3939 = f493 * 1479;
+    let v3939 = f493;
     let v3940 = f237 + v3939;
     let v3941 = f237 - v3939;
     let v3942 = v3940 * 4043;
@@ -5046,10 +5114,10 @@ fn ntt_falcon512_fast_inner(
     let v3981 = v3959 * 3542;
     let v3982 = v3923 + v3981;
     let v3983 = v3923 - v3981;
-    let v3984 = f285 * 1479;
+    let v3984 = f285;
     let v3985 = f29 + v3984;
     let v3986 = f29 - v3984;
-    let v3987 = f413 * 1479;
+    let v3987 = f413;
     let v3988 = f157 + v3987;
     let v3989 = f157 - v3987;
     let v3990 = v3988 * 4043;
@@ -5058,10 +5126,10 @@ fn ntt_falcon512_fast_inner(
     let v3993 = v3989 * 5146;
     let v3994 = v3986 + v3993;
     let v3995 = v3986 - v3993;
-    let v3996 = f349 * 1479;
+    let v3996 = f349;
     let v3997 = f93 + v3996;
     let v3998 = f93 - v3996;
-    let v3999 = f477 * 1479;
+    let v3999 = f477;
     let v4000 = f221 + v3999;
     let v4001 = f221 - v3999;
     let v4002 = v4000 * 4043;
@@ -5082,10 +5150,10 @@ fn ntt_falcon512_fast_inner(
     let v4017 = v4007 * 1305;
     let v4018 = v3995 + v4017;
     let v4019 = v3995 - v4017;
-    let v4020 = f317 * 1479;
+    let v4020 = f317;
     let v4021 = f61 + v4020;
     let v4022 = f61 - v4020;
-    let v4023 = f445 * 1479;
+    let v4023 = f445;
     let v4024 = f189 + v4023;
     let v4025 = f189 - v4023;
     let v4026 = v4024 * 4043;
@@ -5094,10 +5162,10 @@ fn ntt_falcon512_fast_inner(
     let v4029 = v4025 * 5146;
     let v4030 = v4022 + v4029;
     let v4031 = v4022 - v4029;
-    let v4032 = f381 * 1479;
+    let v4032 = f381;
     let v4033 = f125 + v4032;
     let v4034 = f125 - v4032;
-    let v4035 = f509 * 1479;
+    let v4035 = f509;
     let v4036 = f253 + v4035;
     let v4037 = f253 - v4035;
     let v4038 = v4036 * 4043;
@@ -5478,10 +5546,10 @@ fn ntt_falcon512_fast_inner(
     let v4413 = v4223 * 1428;
     let v4414 = v3647 + v4413;
     let v4415 = v3647 - v4413;
-    let v4416 = f259 * 1479;
+    let v4416 = f259;
     let v4417 = f3 + v4416;
     let v4418 = f3 - v4416;
-    let v4419 = f387 * 1479;
+    let v4419 = f387;
     let v4420 = f131 + v4419;
     let v4421 = f131 - v4419;
     let v4422 = v4420 * 4043;
@@ -5490,10 +5558,10 @@ fn ntt_falcon512_fast_inner(
     let v4425 = v4421 * 5146;
     let v4426 = v4418 + v4425;
     let v4427 = v4418 - v4425;
-    let v4428 = f323 * 1479;
+    let v4428 = f323;
     let v4429 = f67 + v4428;
     let v4430 = f67 - v4428;
-    let v4431 = f451 * 1479;
+    let v4431 = f451;
     let v4432 = f195 + v4431;
     let v4433 = f195 - v4431;
     let v4434 = v4432 * 4043;
@@ -5514,10 +5582,10 @@ fn ntt_falcon512_fast_inner(
     let v4449 = v4439 * 1305;
     let v4450 = v4427 + v4449;
     let v4451 = v4427 - v4449;
-    let v4452 = f291 * 1479;
+    let v4452 = f291;
     let v4453 = f35 + v4452;
     let v4454 = f35 - v4452;
-    let v4455 = f419 * 1479;
+    let v4455 = f419;
     let v4456 = f163 + v4455;
     let v4457 = f163 - v4455;
     let v4458 = v4456 * 4043;
@@ -5526,10 +5594,10 @@ fn ntt_falcon512_fast_inner(
     let v4461 = v4457 * 5146;
     let v4462 = v4454 + v4461;
     let v4463 = v4454 - v4461;
-    let v4464 = f355 * 1479;
+    let v4464 = f355;
     let v4465 = f99 + v4464;
     let v4466 = f99 - v4464;
-    let v4467 = f483 * 1479;
+    let v4467 = f483;
     let v4468 = f227 + v4467;
     let v4469 = f227 - v4467;
     let v4470 = v4468 * 4043;
@@ -5574,10 +5642,10 @@ fn ntt_falcon512_fast_inner(
     let v4509 = v4487 * 3542;
     let v4510 = v4451 + v4509;
     let v4511 = v4451 - v4509;
-    let v4512 = f275 * 1479;
+    let v4512 = f275;
     let v4513 = f19 + v4512;
     let v4514 = f19 - v4512;
-    let v4515 = f403 * 1479;
+    let v4515 = f403;
     let v4516 = f147 + v4515;
     let v4517 = f147 - v4515;
     let v4518 = v4516 * 4043;
@@ -5586,10 +5654,10 @@ fn ntt_falcon512_fast_inner(
     let v4521 = v4517 * 5146;
     let v4522 = v4514 + v4521;
     let v4523 = v4514 - v4521;
-    let v4524 = f339 * 1479;
+    let v4524 = f339;
     let v4525 = f83 + v4524;
     let v4526 = f83 - v4524;
-    let v4527 = f467 * 1479;
+    let v4527 = f467;
     let v4528 = f211 + v4527;
     let v4529 = f211 - v4527;
     let v4530 = v4528 * 4043;
@@ -5610,10 +5678,10 @@ fn ntt_falcon512_fast_inner(
     let v4545 = v4535 * 1305;
     let v4546 = v4523 + v4545;
     let v4547 = v4523 - v4545;
-    let v4548 = f307 * 1479;
+    let v4548 = f307;
     let v4549 = f51 + v4548;
     let v4550 = f51 - v4548;
-    let v4551 = f435 * 1479;
+    let v4551 = f435;
     let v4552 = f179 + v4551;
     let v4553 = f179 - v4551;
     let v4554 = v4552 * 4043;
@@ -5622,10 +5690,10 @@ fn ntt_falcon512_fast_inner(
     let v4557 = v4553 * 5146;
     let v4558 = v4550 + v4557;
     let v4559 = v4550 - v4557;
-    let v4560 = f371 * 1479;
+    let v4560 = f371;
     let v4561 = f115 + v4560;
     let v4562 = f115 - v4560;
-    let v4563 = f499 * 1479;
+    let v4563 = f499;
     let v4564 = f243 + v4563;
     let v4565 = f243 - v4563;
     let v4566 = v4564 * 4043;
@@ -5718,10 +5786,10 @@ fn ntt_falcon512_fast_inner(
     let v4653 = v4607 * 2639;
     let v4654 = v4511 + v4653;
     let v4655 = v4511 - v4653;
-    let v4656 = f267 * 1479;
+    let v4656 = f267;
     let v4657 = f11 + v4656;
     let v4658 = f11 - v4656;
-    let v4659 = f395 * 1479;
+    let v4659 = f395;
     let v4660 = f139 + v4659;
     let v4661 = f139 - v4659;
     let v4662 = v4660 * 4043;
@@ -5730,10 +5798,10 @@ fn ntt_falcon512_fast_inner(
     let v4665 = v4661 * 5146;
     let v4666 = v4658 + v4665;
     let v4667 = v4658 - v4665;
-    let v4668 = f331 * 1479;
+    let v4668 = f331;
     let v4669 = f75 + v4668;
     let v4670 = f75 - v4668;
-    let v4671 = f459 * 1479;
+    let v4671 = f459;
     let v4672 = f203 + v4671;
     let v4673 = f203 - v4671;
     let v4674 = v4672 * 4043;
@@ -5754,10 +5822,10 @@ fn ntt_falcon512_fast_inner(
     let v4689 = v4679 * 1305;
     let v4690 = v4667 + v4689;
     let v4691 = v4667 - v4689;
-    let v4692 = f299 * 1479;
+    let v4692 = f299;
     let v4693 = f43 + v4692;
     let v4694 = f43 - v4692;
-    let v4695 = f427 * 1479;
+    let v4695 = f427;
     let v4696 = f171 + v4695;
     let v4697 = f171 - v4695;
     let v4698 = v4696 * 4043;
@@ -5766,10 +5834,10 @@ fn ntt_falcon512_fast_inner(
     let v4701 = v4697 * 5146;
     let v4702 = v4694 + v4701;
     let v4703 = v4694 - v4701;
-    let v4704 = f363 * 1479;
+    let v4704 = f363;
     let v4705 = f107 + v4704;
     let v4706 = f107 - v4704;
-    let v4707 = f491 * 1479;
+    let v4707 = f491;
     let v4708 = f235 + v4707;
     let v4709 = f235 - v4707;
     let v4710 = v4708 * 4043;
@@ -5814,10 +5882,10 @@ fn ntt_falcon512_fast_inner(
     let v4749 = v4727 * 3542;
     let v4750 = v4691 + v4749;
     let v4751 = v4691 - v4749;
-    let v4752 = f283 * 1479;
+    let v4752 = f283;
     let v4753 = f27 + v4752;
     let v4754 = f27 - v4752;
-    let v4755 = f411 * 1479;
+    let v4755 = f411;
     let v4756 = f155 + v4755;
     let v4757 = f155 - v4755;
     let v4758 = v4756 * 4043;
@@ -5826,10 +5894,10 @@ fn ntt_falcon512_fast_inner(
     let v4761 = v4757 * 5146;
     let v4762 = v4754 + v4761;
     let v4763 = v4754 - v4761;
-    let v4764 = f347 * 1479;
+    let v4764 = f347;
     let v4765 = f91 + v4764;
     let v4766 = f91 - v4764;
-    let v4767 = f475 * 1479;
+    let v4767 = f475;
     let v4768 = f219 + v4767;
     let v4769 = f219 - v4767;
     let v4770 = v4768 * 4043;
@@ -5850,10 +5918,10 @@ fn ntt_falcon512_fast_inner(
     let v4785 = v4775 * 1305;
     let v4786 = v4763 + v4785;
     let v4787 = v4763 - v4785;
-    let v4788 = f315 * 1479;
+    let v4788 = f315;
     let v4789 = f59 + v4788;
     let v4790 = f59 - v4788;
-    let v4791 = f443 * 1479;
+    let v4791 = f443;
     let v4792 = f187 + v4791;
     let v4793 = f187 - v4791;
     let v4794 = v4792 * 4043;
@@ -5862,10 +5930,10 @@ fn ntt_falcon512_fast_inner(
     let v4797 = v4793 * 5146;
     let v4798 = v4790 + v4797;
     let v4799 = v4790 - v4797;
-    let v4800 = f379 * 1479;
+    let v4800 = f379;
     let v4801 = f123 + v4800;
     let v4802 = f123 - v4800;
-    let v4803 = f507 * 1479;
+    let v4803 = f507;
     let v4804 = f251 + v4803;
     let v4805 = f251 - v4803;
     let v4806 = v4804 * 4043;
@@ -6054,10 +6122,10 @@ fn ntt_falcon512_fast_inner(
     let v4989 = v4895 * 790;
     let v4990 = v4655 + v4989;
     let v4991 = v4655 - v4989;
-    let v4992 = f263 * 1479;
+    let v4992 = f263;
     let v4993 = f7 + v4992;
     let v4994 = f7 - v4992;
-    let v4995 = f391 * 1479;
+    let v4995 = f391;
     let v4996 = f135 + v4995;
     let v4997 = f135 - v4995;
     let v4998 = v4996 * 4043;
@@ -6066,10 +6134,10 @@ fn ntt_falcon512_fast_inner(
     let v5001 = v4997 * 5146;
     let v5002 = v4994 + v5001;
     let v5003 = v4994 - v5001;
-    let v5004 = f327 * 1479;
+    let v5004 = f327;
     let v5005 = f71 + v5004;
     let v5006 = f71 - v5004;
-    let v5007 = f455 * 1479;
+    let v5007 = f455;
     let v5008 = f199 + v5007;
     let v5009 = f199 - v5007;
     let v5010 = v5008 * 4043;
@@ -6090,10 +6158,10 @@ fn ntt_falcon512_fast_inner(
     let v5025 = v5015 * 1305;
     let v5026 = v5003 + v5025;
     let v5027 = v5003 - v5025;
-    let v5028 = f295 * 1479;
+    let v5028 = f295;
     let v5029 = f39 + v5028;
     let v5030 = f39 - v5028;
-    let v5031 = f423 * 1479;
+    let v5031 = f423;
     let v5032 = f167 + v5031;
     let v5033 = f167 - v5031;
     let v5034 = v5032 * 4043;
@@ -6102,10 +6170,10 @@ fn ntt_falcon512_fast_inner(
     let v5037 = v5033 * 5146;
     let v5038 = v5030 + v5037;
     let v5039 = v5030 - v5037;
-    let v5040 = f359 * 1479;
+    let v5040 = f359;
     let v5041 = f103 + v5040;
     let v5042 = f103 - v5040;
-    let v5043 = f487 * 1479;
+    let v5043 = f487;
     let v5044 = f231 + v5043;
     let v5045 = f231 - v5043;
     let v5046 = v5044 * 4043;
@@ -6150,10 +6218,10 @@ fn ntt_falcon512_fast_inner(
     let v5085 = v5063 * 3542;
     let v5086 = v5027 + v5085;
     let v5087 = v5027 - v5085;
-    let v5088 = f279 * 1479;
+    let v5088 = f279;
     let v5089 = f23 + v5088;
     let v5090 = f23 - v5088;
-    let v5091 = f407 * 1479;
+    let v5091 = f407;
     let v5092 = f151 + v5091;
     let v5093 = f151 - v5091;
     let v5094 = v5092 * 4043;
@@ -6162,10 +6230,10 @@ fn ntt_falcon512_fast_inner(
     let v5097 = v5093 * 5146;
     let v5098 = v5090 + v5097;
     let v5099 = v5090 - v5097;
-    let v5100 = f343 * 1479;
+    let v5100 = f343;
     let v5101 = f87 + v5100;
     let v5102 = f87 - v5100;
-    let v5103 = f471 * 1479;
+    let v5103 = f471;
     let v5104 = f215 + v5103;
     let v5105 = f215 - v5103;
     let v5106 = v5104 * 4043;
@@ -6186,10 +6254,10 @@ fn ntt_falcon512_fast_inner(
     let v5121 = v5111 * 1305;
     let v5122 = v5099 + v5121;
     let v5123 = v5099 - v5121;
-    let v5124 = f311 * 1479;
+    let v5124 = f311;
     let v5125 = f55 + v5124;
     let v5126 = f55 - v5124;
-    let v5127 = f439 * 1479;
+    let v5127 = f439;
     let v5128 = f183 + v5127;
     let v5129 = f183 - v5127;
     let v5130 = v5128 * 4043;
@@ -6198,10 +6266,10 @@ fn ntt_falcon512_fast_inner(
     let v5133 = v5129 * 5146;
     let v5134 = v5126 + v5133;
     let v5135 = v5126 - v5133;
-    let v5136 = f375 * 1479;
+    let v5136 = f375;
     let v5137 = f119 + v5136;
     let v5138 = f119 - v5136;
-    let v5139 = f503 * 1479;
+    let v5139 = f503;
     let v5140 = f247 + v5139;
     let v5141 = f247 - v5139;
     let v5142 = v5140 * 4043;
@@ -6294,10 +6362,10 @@ fn ntt_falcon512_fast_inner(
     let v5229 = v5183 * 2639;
     let v5230 = v5087 + v5229;
     let v5231 = v5087 - v5229;
-    let v5232 = f271 * 1479;
+    let v5232 = f271;
     let v5233 = f15 + v5232;
     let v5234 = f15 - v5232;
-    let v5235 = f399 * 1479;
+    let v5235 = f399;
     let v5236 = f143 + v5235;
     let v5237 = f143 - v5235;
     let v5238 = v5236 * 4043;
@@ -6306,10 +6374,10 @@ fn ntt_falcon512_fast_inner(
     let v5241 = v5237 * 5146;
     let v5242 = v5234 + v5241;
     let v5243 = v5234 - v5241;
-    let v5244 = f335 * 1479;
+    let v5244 = f335;
     let v5245 = f79 + v5244;
     let v5246 = f79 - v5244;
-    let v5247 = f463 * 1479;
+    let v5247 = f463;
     let v5248 = f207 + v5247;
     let v5249 = f207 - v5247;
     let v5250 = v5248 * 4043;
@@ -6330,10 +6398,10 @@ fn ntt_falcon512_fast_inner(
     let v5265 = v5255 * 1305;
     let v5266 = v5243 + v5265;
     let v5267 = v5243 - v5265;
-    let v5268 = f303 * 1479;
+    let v5268 = f303;
     let v5269 = f47 + v5268;
     let v5270 = f47 - v5268;
-    let v5271 = f431 * 1479;
+    let v5271 = f431;
     let v5272 = f175 + v5271;
     let v5273 = f175 - v5271;
     let v5274 = v5272 * 4043;
@@ -6342,10 +6410,10 @@ fn ntt_falcon512_fast_inner(
     let v5277 = v5273 * 5146;
     let v5278 = v5270 + v5277;
     let v5279 = v5270 - v5277;
-    let v5280 = f367 * 1479;
+    let v5280 = f367;
     let v5281 = f111 + v5280;
     let v5282 = f111 - v5280;
-    let v5283 = f495 * 1479;
+    let v5283 = f495;
     let v5284 = f239 + v5283;
     let v5285 = f239 - v5283;
     let v5286 = v5284 * 4043;
@@ -6390,10 +6458,10 @@ fn ntt_falcon512_fast_inner(
     let v5325 = v5303 * 3542;
     let v5326 = v5267 + v5325;
     let v5327 = v5267 - v5325;
-    let v5328 = f287 * 1479;
+    let v5328 = f287;
     let v5329 = f31 + v5328;
     let v5330 = f31 - v5328;
-    let v5331 = f415 * 1479;
+    let v5331 = f415;
     let v5332 = f159 + v5331;
     let v5333 = f159 - v5331;
     let v5334 = v5332 * 4043;
@@ -6402,10 +6470,10 @@ fn ntt_falcon512_fast_inner(
     let v5337 = v5333 * 5146;
     let v5338 = v5330 + v5337;
     let v5339 = v5330 - v5337;
-    let v5340 = f351 * 1479;
+    let v5340 = f351;
     let v5341 = f95 + v5340;
     let v5342 = f95 - v5340;
-    let v5343 = f479 * 1479;
+    let v5343 = f479;
     let v5344 = f223 + v5343;
     let v5345 = f223 - v5343;
     let v5346 = v5344 * 4043;
@@ -6426,10 +6494,10 @@ fn ntt_falcon512_fast_inner(
     let v5361 = v5351 * 1305;
     let v5362 = v5339 + v5361;
     let v5363 = v5339 - v5361;
-    let v5364 = f319 * 1479;
+    let v5364 = f319;
     let v5365 = f63 + v5364;
     let v5366 = f63 - v5364;
-    let v5367 = f447 * 1479;
+    let v5367 = f447;
     let v5368 = f191 + v5367;
     let v5369 = f191 - v5367;
     let v5370 = v5368 * 4043;
@@ -6438,10 +6506,10 @@ fn ntt_falcon512_fast_inner(
     let v5373 = v5369 * 5146;
     let v5374 = v5366 + v5373;
     let v5375 = v5366 - v5373;
-    let v5376 = f383 * 1479;
+    let v5376 = f383;
     let v5377 = f127 + v5376;
     let v5378 = f127 - v5376;
-    let v5379 = f511 * 1479;
+    let v5379 = f511;
     let v5380 = f255 + v5379;
     let v5381 = f255 - v5379;
     let v5382 = v5380 * 4043;
@@ -10039,6 +10107,7 @@ pub fn ntt_falcon512_fast_unchecked(mut f: Span<felt252>) -> Array<felt252> {
     ] =
         boxed
         .unbox();
+    let f256 = zf(f256); let f257 = zf(f257); let f258 = zf(f258); let f259 = zf(f259); let f260 = zf(f260); let f261 = zf(f261); let f262 = zf(f262); let f263 = zf(f263); let f264 = zf(f264); let f265 = zf(f265); let f266 = zf(f266); let f267 = zf(f267); let f268 = zf(f268); let f269 = zf(f269); let f270 = zf(f270); let f271 = zf(f271); let f272 = zf(f272); let f273 = zf(f273); let f274 = zf(f274); let f275 = zf(f275); let f276 = zf(f276); let f277 = zf(f277); let f278 = zf(f278); let f279 = zf(f279); let f280 = zf(f280); let f281 = zf(f281); let f282 = zf(f282); let f283 = zf(f283); let f284 = zf(f284); let f285 = zf(f285); let f286 = zf(f286); let f287 = zf(f287); let f288 = zf(f288); let f289 = zf(f289); let f290 = zf(f290); let f291 = zf(f291); let f292 = zf(f292); let f293 = zf(f293); let f294 = zf(f294); let f295 = zf(f295); let f296 = zf(f296); let f297 = zf(f297); let f298 = zf(f298); let f299 = zf(f299); let f300 = zf(f300); let f301 = zf(f301); let f302 = zf(f302); let f303 = zf(f303); let f304 = zf(f304); let f305 = zf(f305); let f306 = zf(f306); let f307 = zf(f307); let f308 = zf(f308); let f309 = zf(f309); let f310 = zf(f310); let f311 = zf(f311); let f312 = zf(f312); let f313 = zf(f313); let f314 = zf(f314); let f315 = zf(f315); let f316 = zf(f316); let f317 = zf(f317); let f318 = zf(f318); let f319 = zf(f319); let f320 = zf(f320); let f321 = zf(f321); let f322 = zf(f322); let f323 = zf(f323); let f324 = zf(f324); let f325 = zf(f325); let f326 = zf(f326); let f327 = zf(f327); let f328 = zf(f328); let f329 = zf(f329); let f330 = zf(f330); let f331 = zf(f331); let f332 = zf(f332); let f333 = zf(f333); let f334 = zf(f334); let f335 = zf(f335); let f336 = zf(f336); let f337 = zf(f337); let f338 = zf(f338); let f339 = zf(f339); let f340 = zf(f340); let f341 = zf(f341); let f342 = zf(f342); let f343 = zf(f343); let f344 = zf(f344); let f345 = zf(f345); let f346 = zf(f346); let f347 = zf(f347); let f348 = zf(f348); let f349 = zf(f349); let f350 = zf(f350); let f351 = zf(f351); let f352 = zf(f352); let f353 = zf(f353); let f354 = zf(f354); let f355 = zf(f355); let f356 = zf(f356); let f357 = zf(f357); let f358 = zf(f358); let f359 = zf(f359); let f360 = zf(f360); let f361 = zf(f361); let f362 = zf(f362); let f363 = zf(f363); let f364 = zf(f364); let f365 = zf(f365); let f366 = zf(f366); let f367 = zf(f367); let f368 = zf(f368); let f369 = zf(f369); let f370 = zf(f370); let f371 = zf(f371); let f372 = zf(f372); let f373 = zf(f373); let f374 = zf(f374); let f375 = zf(f375); let f376 = zf(f376); let f377 = zf(f377); let f378 = zf(f378); let f379 = zf(f379); let f380 = zf(f380); let f381 = zf(f381); let f382 = zf(f382); let f383 = zf(f383); let f384 = zf(f384); let f385 = zf(f385); let f386 = zf(f386); let f387 = zf(f387); let f388 = zf(f388); let f389 = zf(f389); let f390 = zf(f390); let f391 = zf(f391); let f392 = zf(f392); let f393 = zf(f393); let f394 = zf(f394); let f395 = zf(f395); let f396 = zf(f396); let f397 = zf(f397); let f398 = zf(f398); let f399 = zf(f399); let f400 = zf(f400); let f401 = zf(f401); let f402 = zf(f402); let f403 = zf(f403); let f404 = zf(f404); let f405 = zf(f405); let f406 = zf(f406); let f407 = zf(f407); let f408 = zf(f408); let f409 = zf(f409); let f410 = zf(f410); let f411 = zf(f411); let f412 = zf(f412); let f413 = zf(f413); let f414 = zf(f414); let f415 = zf(f415); let f416 = zf(f416); let f417 = zf(f417); let f418 = zf(f418); let f419 = zf(f419); let f420 = zf(f420); let f421 = zf(f421); let f422 = zf(f422); let f423 = zf(f423); let f424 = zf(f424); let f425 = zf(f425); let f426 = zf(f426); let f427 = zf(f427); let f428 = zf(f428); let f429 = zf(f429); let f430 = zf(f430); let f431 = zf(f431); let f432 = zf(f432); let f433 = zf(f433); let f434 = zf(f434); let f435 = zf(f435); let f436 = zf(f436); let f437 = zf(f437); let f438 = zf(f438); let f439 = zf(f439); let f440 = zf(f440); let f441 = zf(f441); let f442 = zf(f442); let f443 = zf(f443); let f444 = zf(f444); let f445 = zf(f445); let f446 = zf(f446); let f447 = zf(f447); let f448 = zf(f448); let f449 = zf(f449); let f450 = zf(f450); let f451 = zf(f451); let f452 = zf(f452); let f453 = zf(f453); let f454 = zf(f454); let f455 = zf(f455); let f456 = zf(f456); let f457 = zf(f457); let f458 = zf(f458); let f459 = zf(f459); let f460 = zf(f460); let f461 = zf(f461); let f462 = zf(f462); let f463 = zf(f463); let f464 = zf(f464); let f465 = zf(f465); let f466 = zf(f466); let f467 = zf(f467); let f468 = zf(f468); let f469 = zf(f469); let f470 = zf(f470); let f471 = zf(f471); let f472 = zf(f472); let f473 = zf(f473); let f474 = zf(f474); let f475 = zf(f475); let f476 = zf(f476); let f477 = zf(f477); let f478 = zf(f478); let f479 = zf(f479); let f480 = zf(f480); let f481 = zf(f481); let f482 = zf(f482); let f483 = zf(f483); let f484 = zf(f484); let f485 = zf(f485); let f486 = zf(f486); let f487 = zf(f487); let f488 = zf(f488); let f489 = zf(f489); let f490 = zf(f490); let f491 = zf(f491); let f492 = zf(f492); let f493 = zf(f493); let f494 = zf(f494); let f495 = zf(f495); let f496 = zf(f496); let f497 = zf(f497); let f498 = zf(f498); let f499 = zf(f499); let f500 = zf(f500); let f501 = zf(f501); let f502 = zf(f502); let f503 = zf(f503); let f504 = zf(f504); let f505 = zf(f505); let f506 = zf(f506); let f507 = zf(f507); let f508 = zf(f508); let f509 = zf(f509); let f510 = zf(f510); let f511 = zf(f511);
     let (
         r0,
         r1,
@@ -10554,7 +10623,7 @@ pub fn ntt_falcon512_fast_unchecked(mut f: Span<felt252>) -> Array<felt252> {
         r511,
     ) =
         ntt_falcon512_fast_inner(
-        f0,
+        f0 + LAZY_SHIFT,
         f1,
         f2,
         f3,
@@ -11158,9 +11227,11 @@ pub fn ntt_falcon512_fast_unchecked(mut f: Span<felt252>) -> Array<felt252> {
 /// validating each coefficient.
 ///
 /// Inputs must be in `[0, 12289)`; violating that precondition may return an
-/// invalid transform. Outputs are in the Falcon/falcon.py evaluation order and
-/// reduced to the same range.
-pub fn ntt_falcon512_fast_u16_unchecked(mut f: Span<u16>) -> Array<u16> {
+/// invalid transform. Outputs are in the Falcon/falcon.py evaluation order, converted
+/// by `NttOutput`: reduced to the same range for `u16`, unreduced for `L`.
+pub fn ntt_falcon512_fast_u16_into<T,impl C: NttOutput<L,T>,+Drop<T>>(
+    mut f: Span<u16>,shift: felt252,
+) -> Span<T> {
     assert(f.len() == 512, 'fast NTT: bad length');
     let boxed = f.multi_pop_front::<512>().unwrap();
     let [
@@ -11679,6 +11750,7 @@ pub fn ntt_falcon512_fast_u16_unchecked(mut f: Span<u16>) -> Array<u16> {
     ] =
         boxed
         .unbox();
+    let f256 = zu(f256); let f257 = zu(f257); let f258 = zu(f258); let f259 = zu(f259); let f260 = zu(f260); let f261 = zu(f261); let f262 = zu(f262); let f263 = zu(f263); let f264 = zu(f264); let f265 = zu(f265); let f266 = zu(f266); let f267 = zu(f267); let f268 = zu(f268); let f269 = zu(f269); let f270 = zu(f270); let f271 = zu(f271); let f272 = zu(f272); let f273 = zu(f273); let f274 = zu(f274); let f275 = zu(f275); let f276 = zu(f276); let f277 = zu(f277); let f278 = zu(f278); let f279 = zu(f279); let f280 = zu(f280); let f281 = zu(f281); let f282 = zu(f282); let f283 = zu(f283); let f284 = zu(f284); let f285 = zu(f285); let f286 = zu(f286); let f287 = zu(f287); let f288 = zu(f288); let f289 = zu(f289); let f290 = zu(f290); let f291 = zu(f291); let f292 = zu(f292); let f293 = zu(f293); let f294 = zu(f294); let f295 = zu(f295); let f296 = zu(f296); let f297 = zu(f297); let f298 = zu(f298); let f299 = zu(f299); let f300 = zu(f300); let f301 = zu(f301); let f302 = zu(f302); let f303 = zu(f303); let f304 = zu(f304); let f305 = zu(f305); let f306 = zu(f306); let f307 = zu(f307); let f308 = zu(f308); let f309 = zu(f309); let f310 = zu(f310); let f311 = zu(f311); let f312 = zu(f312); let f313 = zu(f313); let f314 = zu(f314); let f315 = zu(f315); let f316 = zu(f316); let f317 = zu(f317); let f318 = zu(f318); let f319 = zu(f319); let f320 = zu(f320); let f321 = zu(f321); let f322 = zu(f322); let f323 = zu(f323); let f324 = zu(f324); let f325 = zu(f325); let f326 = zu(f326); let f327 = zu(f327); let f328 = zu(f328); let f329 = zu(f329); let f330 = zu(f330); let f331 = zu(f331); let f332 = zu(f332); let f333 = zu(f333); let f334 = zu(f334); let f335 = zu(f335); let f336 = zu(f336); let f337 = zu(f337); let f338 = zu(f338); let f339 = zu(f339); let f340 = zu(f340); let f341 = zu(f341); let f342 = zu(f342); let f343 = zu(f343); let f344 = zu(f344); let f345 = zu(f345); let f346 = zu(f346); let f347 = zu(f347); let f348 = zu(f348); let f349 = zu(f349); let f350 = zu(f350); let f351 = zu(f351); let f352 = zu(f352); let f353 = zu(f353); let f354 = zu(f354); let f355 = zu(f355); let f356 = zu(f356); let f357 = zu(f357); let f358 = zu(f358); let f359 = zu(f359); let f360 = zu(f360); let f361 = zu(f361); let f362 = zu(f362); let f363 = zu(f363); let f364 = zu(f364); let f365 = zu(f365); let f366 = zu(f366); let f367 = zu(f367); let f368 = zu(f368); let f369 = zu(f369); let f370 = zu(f370); let f371 = zu(f371); let f372 = zu(f372); let f373 = zu(f373); let f374 = zu(f374); let f375 = zu(f375); let f376 = zu(f376); let f377 = zu(f377); let f378 = zu(f378); let f379 = zu(f379); let f380 = zu(f380); let f381 = zu(f381); let f382 = zu(f382); let f383 = zu(f383); let f384 = zu(f384); let f385 = zu(f385); let f386 = zu(f386); let f387 = zu(f387); let f388 = zu(f388); let f389 = zu(f389); let f390 = zu(f390); let f391 = zu(f391); let f392 = zu(f392); let f393 = zu(f393); let f394 = zu(f394); let f395 = zu(f395); let f396 = zu(f396); let f397 = zu(f397); let f398 = zu(f398); let f399 = zu(f399); let f400 = zu(f400); let f401 = zu(f401); let f402 = zu(f402); let f403 = zu(f403); let f404 = zu(f404); let f405 = zu(f405); let f406 = zu(f406); let f407 = zu(f407); let f408 = zu(f408); let f409 = zu(f409); let f410 = zu(f410); let f411 = zu(f411); let f412 = zu(f412); let f413 = zu(f413); let f414 = zu(f414); let f415 = zu(f415); let f416 = zu(f416); let f417 = zu(f417); let f418 = zu(f418); let f419 = zu(f419); let f420 = zu(f420); let f421 = zu(f421); let f422 = zu(f422); let f423 = zu(f423); let f424 = zu(f424); let f425 = zu(f425); let f426 = zu(f426); let f427 = zu(f427); let f428 = zu(f428); let f429 = zu(f429); let f430 = zu(f430); let f431 = zu(f431); let f432 = zu(f432); let f433 = zu(f433); let f434 = zu(f434); let f435 = zu(f435); let f436 = zu(f436); let f437 = zu(f437); let f438 = zu(f438); let f439 = zu(f439); let f440 = zu(f440); let f441 = zu(f441); let f442 = zu(f442); let f443 = zu(f443); let f444 = zu(f444); let f445 = zu(f445); let f446 = zu(f446); let f447 = zu(f447); let f448 = zu(f448); let f449 = zu(f449); let f450 = zu(f450); let f451 = zu(f451); let f452 = zu(f452); let f453 = zu(f453); let f454 = zu(f454); let f455 = zu(f455); let f456 = zu(f456); let f457 = zu(f457); let f458 = zu(f458); let f459 = zu(f459); let f460 = zu(f460); let f461 = zu(f461); let f462 = zu(f462); let f463 = zu(f463); let f464 = zu(f464); let f465 = zu(f465); let f466 = zu(f466); let f467 = zu(f467); let f468 = zu(f468); let f469 = zu(f469); let f470 = zu(f470); let f471 = zu(f471); let f472 = zu(f472); let f473 = zu(f473); let f474 = zu(f474); let f475 = zu(f475); let f476 = zu(f476); let f477 = zu(f477); let f478 = zu(f478); let f479 = zu(f479); let f480 = zu(f480); let f481 = zu(f481); let f482 = zu(f482); let f483 = zu(f483); let f484 = zu(f484); let f485 = zu(f485); let f486 = zu(f486); let f487 = zu(f487); let f488 = zu(f488); let f489 = zu(f489); let f490 = zu(f490); let f491 = zu(f491); let f492 = zu(f492); let f493 = zu(f493); let f494 = zu(f494); let f495 = zu(f495); let f496 = zu(f496); let f497 = zu(f497); let f498 = zu(f498); let f499 = zu(f499); let f500 = zu(f500); let f501 = zu(f501); let f502 = zu(f502); let f503 = zu(f503); let f504 = zu(f504); let f505 = zu(f505); let f506 = zu(f506); let f507 = zu(f507); let f508 = zu(f508); let f509 = zu(f509); let f510 = zu(f510); let f511 = zu(f511);
     let (
         r0,
         r1,
@@ -12194,7 +12266,7 @@ pub fn ntt_falcon512_fast_u16_unchecked(mut f: Span<u16>) -> Array<u16> {
         r511,
     ) =
         ntt_falcon512_fast_inner(
-        f0.into(),
+        f0.into() + shift,
         f1.into(),
         f2.into(),
         f3.into(),
@@ -12707,7 +12779,7 @@ pub fn ntt_falcon512_fast_u16_unchecked(mut f: Span<u16>) -> Array<u16> {
         f510.into(),
         f511.into(),
     );
-    array![
+    let out: [T; 512] = [
         upcast(r0), upcast(r1), upcast(r2), upcast(r3), upcast(r4), upcast(r5), upcast(r6),
         upcast(r7), upcast(r8), upcast(r9), upcast(r10), upcast(r11), upcast(r12), upcast(r13),
         upcast(r14), upcast(r15), upcast(r16), upcast(r17), upcast(r18), upcast(r19), upcast(r20),
@@ -12791,5 +12863,54 @@ pub fn ntt_falcon512_fast_u16_unchecked(mut f: Span<u16>) -> Array<u16> {
         upcast(r494), upcast(r495), upcast(r496), upcast(r497), upcast(r498), upcast(r499),
         upcast(r500), upcast(r501), upcast(r502), upcast(r503), upcast(r504), upcast(r505),
         upcast(r506), upcast(r507), upcast(r508), upcast(r509), upcast(r510), upcast(r511),
-    ]
+    ];
+    let boxed: Box<@[T; 512]> = BoxTrait::new(@out);
+    boxed.span()
+}
+
+/// Compute the Falcon-512 forward NTT from canonical `u16` coefficients, reduced.
+pub fn ntt_falcon512_fast_u16_unchecked(f: Span<u16>) -> Array<u16> {
+    let mut out = array![];
+    out.append_span(ntt_falcon512_fast_u16_into(f,LAZY_SHIFT));
+    out
+}
+
+/// The same transform with its outputs left unreduced (see `L`).
+pub fn ntt_falcon512_fast_u16_lazy_unchecked(f: Span<u16>) -> Span<L> {
+    ntt_falcon512_fast_u16_into(f,LAZY_SHIFT)
+}
+
+/// The lazy transform minus a constant `offset`: input 0 has weight exactly 1 in every
+/// output of the generated graph, so the shift it carries is added to every output once.
+/// Output `j` is the field element `lazy_j - offset` (not a `L` in `[0, 2^122)`).
+pub fn ntt_falcon512_fast_u16_lazy_minus_unchecked(f: Span<u16>,offset: felt252) -> Span<L> {
+    ntt_falcon512_fast_u16_into(f,LAZY_SHIFT - offset)
+}
+// Q21 END
+
+/// The lazy transform minus `offset` of digits as the chunk unpackers return them, outputs
+/// by value as 28 key slots of 18 and the last 8, for a caller that keeps them on its own
+/// stack. The chunks come scaled by `s` (inputs 252..503 by `zs`, 1479 s, the first layer's
+/// twiddle): inputs 252..255 are below 256 and take 1479^-1 back here, the raw last 8 get `zs`,
+/// and the shift `s`, so every output is `s` times the lazy value minus `offset`.
+#[inline(always)]
+pub fn ntt_falcon512_fast_lazy_slots(
+    f: [[felt252; 126]; 4],tail: [felt252; 8],offset: felt252,s: felt252,zs: felt252,
+) -> ([[L; 18]; 28],[L; 8]) {
+    let [[f0,f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f19,f20,f21,f22,f23,f24,f25,f26,f27,f28,f29,f30,f31,f32,f33,f34,f35,f36,f37,f38,f39,f40,f41,f42,f43,f44,f45,f46,f47,f48,f49,f50,f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65,f66,f67,f68,f69,f70,f71,f72,f73,f74,f75,f76,f77,f78,f79,f80,f81,f82,f83,f84,f85,f86,f87,f88,f89,f90,f91,f92,f93,f94,f95,f96,f97,f98,f99,f100,f101,f102,f103,f104,f105,f106,f107,f108,f109,f110,f111,f112,f113,f114,f115,f116,f117,f118,f119,f120,f121,f122,f123,f124,f125],[f126,f127,f128,f129,f130,f131,f132,f133,f134,f135,f136,f137,f138,f139,f140,f141,f142,f143,f144,f145,f146,f147,f148,f149,f150,f151,f152,f153,f154,f155,f156,f157,f158,f159,f160,f161,f162,f163,f164,f165,f166,f167,f168,f169,f170,f171,f172,f173,f174,f175,f176,f177,f178,f179,f180,f181,f182,f183,f184,f185,f186,f187,f188,f189,f190,f191,f192,f193,f194,f195,f196,f197,f198,f199,f200,f201,f202,f203,f204,f205,f206,f207,f208,f209,f210,f211,f212,f213,f214,f215,f216,f217,f218,f219,f220,f221,f222,f223,f224,f225,f226,f227,f228,f229,f230,f231,f232,f233,f234,f235,f236,f237,f238,f239,f240,f241,f242,f243,f244,f245,f246,f247,f248,f249,f250,f251],[f252,f253,f254,f255,f256,f257,f258,f259,f260,f261,f262,f263,f264,f265,f266,f267,f268,f269,f270,f271,f272,f273,f274,f275,f276,f277,f278,f279,f280,f281,f282,f283,f284,f285,f286,f287,f288,f289,f290,f291,f292,f293,f294,f295,f296,f297,f298,f299,f300,f301,f302,f303,f304,f305,f306,f307,f308,f309,f310,f311,f312,f313,f314,f315,f316,f317,f318,f319,f320,f321,f322,f323,f324,f325,f326,f327,f328,f329,f330,f331,f332,f333,f334,f335,f336,f337,f338,f339,f340,f341,f342,f343,f344,f345,f346,f347,f348,f349,f350,f351,f352,f353,f354,f355,f356,f357,f358,f359,f360,f361,f362,f363,f364,f365,f366,f367,f368,f369,f370,f371,f372,f373,f374,f375,f376,f377],[f378,f379,f380,f381,f382,f383,f384,f385,f386,f387,f388,f389,f390,f391,f392,f393,f394,f395,f396,f397,f398,f399,f400,f401,f402,f403,f404,f405,f406,f407,f408,f409,f410,f411,f412,f413,f414,f415,f416,f417,f418,f419,f420,f421,f422,f423,f424,f425,f426,f427,f428,f429,f430,f431,f432,f433,f434,f435,f436,f437,f438,f439,f440,f441,f442,f443,f444,f445,f446,f447,f448,f449,f450,f451,f452,f453,f454,f455,f456,f457,f458,f459,f460,f461,f462,f463,f464,f465,f466,f467,f468,f469,f470,f471,f472,f473,f474,f475,f476,f477,f478,f479,f480,f481,f482,f483,f484,f485,f486,f487,f488,f489,f490,f491,f492,f493,f494,f495,f496,f497,f498,f499,f500,f501,f502,f503]] = f;
+    let [f504,f505,f506,f507,f508,f509,f510,f511] = tail;
+    let (r0,r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,r12,r13,r14,r15,r16,r17,r18,r19,r20,r21,r22,r23,r24,r25,r26,r27,r28,r29,r30,r31,r32,r33,r34,r35,r36,r37,r38,r39,r40,r41,r42,r43,r44,r45,r46,r47,r48,r49,r50,r51,r52,r53,r54,r55,r56,r57,r58,r59,r60,r61,r62,r63,r64,r65,r66,r67,r68,r69,r70,r71,r72,r73,r74,r75,r76,r77,r78,r79,r80,r81,r82,r83,r84,r85,r86,r87,r88,r89,r90,r91,r92,r93,r94,r95,r96,r97,r98,r99,r100,r101,r102,r103,r104,r105,r106,r107,r108,r109,r110,r111,r112,r113,r114,r115,r116,r117,r118,r119,r120,r121,r122,r123,r124,r125,r126,r127,r128,r129,r130,r131,r132,r133,r134,r135,r136,r137,r138,r139,r140,r141,r142,r143,r144,r145,r146,r147,r148,r149,r150,r151,r152,r153,r154,r155,r156,r157,r158,r159,r160,r161,r162,r163,r164,r165,r166,r167,r168,r169,r170,r171,r172,r173,r174,r175,r176,r177,r178,r179,r180,r181,r182,r183,r184,r185,r186,r187,r188,r189,r190,r191,r192,r193,r194,r195,r196,r197,r198,r199,r200,r201,r202,r203,r204,r205,r206,r207,r208,r209,r210,r211,r212,r213,r214,r215,r216,r217,r218,r219,r220,r221,r222,r223,r224,r225,r226,r227,r228,r229,r230,r231,r232,r233,r234,r235,r236,r237,r238,r239,r240,r241,r242,r243,r244,r245,r246,r247,r248,r249,r250,r251,r252,r253,r254,r255,r256,r257,r258,r259,r260,r261,r262,r263,r264,r265,r266,r267,r268,r269,r270,r271,r272,r273,r274,r275,r276,r277,r278,r279,r280,r281,r282,r283,r284,r285,r286,r287,r288,r289,r290,r291,r292,r293,r294,r295,r296,r297,r298,r299,r300,r301,r302,r303,r304,r305,r306,r307,r308,r309,r310,r311,r312,r313,r314,r315,r316,r317,r318,r319,r320,r321,r322,r323,r324,r325,r326,r327,r328,r329,r330,r331,r332,r333,r334,r335,r336,r337,r338,r339,r340,r341,r342,r343,r344,r345,r346,r347,r348,r349,r350,r351,r352,r353,r354,r355,r356,r357,r358,r359,r360,r361,r362,r363,r364,r365,r366,r367,r368,r369,r370,r371,r372,r373,r374,r375,r376,r377,r378,r379,r380,r381,r382,r383,r384,r385,r386,r387,r388,r389,r390,r391,r392,r393,r394,r395,r396,r397,r398,r399,r400,r401,r402,r403,r404,r405,r406,r407,r408,r409,r410,r411,r412,r413,r414,r415,r416,r417,r418,r419,r420,r421,r422,r423,r424,r425,r426,r427,r428,r429,r430,r431,r432,r433,r434,r435,r436,r437,r438,r439,r440,r441,r442,r443,r444,r445,r446,r447,r448,r449,r450,r451,r452,r453,r454,r455,r456,r457,r458,r459,r460,r461,r462,r463,r464,r465,r466,r467,r468,r469,r470,r471,r472,r473,r474,r475,r476,r477,r478,r479,r480,r481,r482,r483,r484,r485,r486,r487,r488,r489,r490,r491,r492,r493,r494,r495,r496,r497,r498,r499,r500,r501,r502,r503,r504,r505,r506,r507,r508,r509,r510,r511) = ntt_falcon512_fast_inner(f0 + (LAZY_SHIFT - offset) * s,f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f19,f20,f21,f22,f23,f24,f25,f26,f27,f28,f29,f30,f31,f32,f33,f34,f35,f36,f37,f38,f39,f40,f41,f42,f43,f44,f45,f46,f47,f48,f49,f50,f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65,f66,f67,f68,f69,f70,f71,f72,f73,f74,f75,f76,f77,f78,f79,f80,f81,f82,f83,f84,f85,f86,f87,f88,f89,f90,f91,f92,f93,f94,f95,f96,f97,f98,f99,f100,f101,f102,f103,f104,f105,f106,f107,f108,f109,f110,f111,f112,f113,f114,f115,f116,f117,f118,f119,f120,f121,f122,f123,f124,f125,f126,f127,f128,f129,f130,f131,f132,f133,f134,f135,f136,f137,f138,f139,f140,f141,f142,f143,f144,f145,f146,f147,f148,f149,f150,f151,f152,f153,f154,f155,f156,f157,f158,f159,f160,f161,f162,f163,f164,f165,f166,f167,f168,f169,f170,f171,f172,f173,f174,f175,f176,f177,f178,f179,f180,f181,f182,f183,f184,f185,f186,f187,f188,f189,f190,f191,f192,f193,f194,f195,f196,f197,f198,f199,f200,f201,f202,f203,f204,f205,f206,f207,f208,f209,f210,f211,f212,f213,f214,f215,f216,f217,f218,f219,f220,f221,f222,f223,f224,f225,f226,f227,f228,f229,f230,f231,f232,f233,f234,f235,f236,f237,f238,f239,f240,f241,f242,f243,f244,f245,f246,f247,f248,f249,f250,f251,f252 * 0x60ee2bf6ffd3b12ee84963df75872ee84963df75872ee84963df75872ee8497,f253 * 0x60ee2bf6ffd3b12ee84963df75872ee84963df75872ee84963df75872ee8497,f254 * 0x60ee2bf6ffd3b12ee84963df75872ee84963df75872ee84963df75872ee8497,f255 * 0x60ee2bf6ffd3b12ee84963df75872ee84963df75872ee84963df75872ee8497,f256,f257,f258,f259,f260,f261,f262,f263,f264,f265,f266,f267,f268,f269,f270,f271,f272,f273,f274,f275,f276,f277,f278,f279,f280,f281,f282,f283,f284,f285,f286,f287,f288,f289,f290,f291,f292,f293,f294,f295,f296,f297,f298,f299,f300,f301,f302,f303,f304,f305,f306,f307,f308,f309,f310,f311,f312,f313,f314,f315,f316,f317,f318,f319,f320,f321,f322,f323,f324,f325,f326,f327,f328,f329,f330,f331,f332,f333,f334,f335,f336,f337,f338,f339,f340,f341,f342,f343,f344,f345,f346,f347,f348,f349,f350,f351,f352,f353,f354,f355,f356,f357,f358,f359,f360,f361,f362,f363,f364,f365,f366,f367,f368,f369,f370,f371,f372,f373,f374,f375,f376,f377,f378,f379,f380,f381,f382,f383,f384,f385,f386,f387,f388,f389,f390,f391,f392,f393,f394,f395,f396,f397,f398,f399,f400,f401,f402,f403,f404,f405,f406,f407,f408,f409,f410,f411,f412,f413,f414,f415,f416,f417,f418,f419,f420,f421,f422,f423,f424,f425,f426,f427,f428,f429,f430,f431,f432,f433,f434,f435,f436,f437,f438,f439,f440,f441,f442,f443,f444,f445,f446,f447,f448,f449,f450,f451,f452,f453,f454,f455,f456,f457,f458,f459,f460,f461,f462,f463,f464,f465,f466,f467,f468,f469,f470,f471,f472,f473,f474,f475,f476,f477,f478,f479,f480,f481,f482,f483,f484,f485,f486,f487,f488,f489,f490,f491,f492,f493,f494,f495,f496,f497,f498,f499,f500,f501,f502,f503,f504 * zs,f505 * zs,f506 * zs,f507 * zs,f508 * zs,f509 * zs,f510 * zs,f511 * zs);
+    ([[r0,r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,r12,r13,r14,r15,r16,r17],[r18,r19,r20,r21,r22,r23,r24,r25,r26,r27,r28,r29,r30,r31,r32,r33,r34,r35],[r36,r37,r38,r39,r40,r41,r42,r43,r44,r45,r46,r47,r48,r49,r50,r51,r52,r53],[r54,r55,r56,r57,r58,r59,r60,r61,r62,r63,r64,r65,r66,r67,r68,r69,r70,r71],[r72,r73,r74,r75,r76,r77,r78,r79,r80,r81,r82,r83,r84,r85,r86,r87,r88,r89],[r90,r91,r92,r93,r94,r95,r96,r97,r98,r99,r100,r101,r102,r103,r104,r105,r106,r107],[r108,r109,r110,r111,r112,r113,r114,r115,r116,r117,r118,r119,r120,r121,r122,r123,r124,r125],[r126,r127,r128,r129,r130,r131,r132,r133,r134,r135,r136,r137,r138,r139,r140,r141,r142,r143],[r144,r145,r146,r147,r148,r149,r150,r151,r152,r153,r154,r155,r156,r157,r158,r159,r160,r161],[r162,r163,r164,r165,r166,r167,r168,r169,r170,r171,r172,r173,r174,r175,r176,r177,r178,r179],[r180,r181,r182,r183,r184,r185,r186,r187,r188,r189,r190,r191,r192,r193,r194,r195,r196,r197],[r198,r199,r200,r201,r202,r203,r204,r205,r206,r207,r208,r209,r210,r211,r212,r213,r214,r215],[r216,r217,r218,r219,r220,r221,r222,r223,r224,r225,r226,r227,r228,r229,r230,r231,r232,r233],[r234,r235,r236,r237,r238,r239,r240,r241,r242,r243,r244,r245,r246,r247,r248,r249,r250,r251],[r252,r253,r254,r255,r256,r257,r258,r259,r260,r261,r262,r263,r264,r265,r266,r267,r268,r269],[r270,r271,r272,r273,r274,r275,r276,r277,r278,r279,r280,r281,r282,r283,r284,r285,r286,r287],[r288,r289,r290,r291,r292,r293,r294,r295,r296,r297,r298,r299,r300,r301,r302,r303,r304,r305],[r306,r307,r308,r309,r310,r311,r312,r313,r314,r315,r316,r317,r318,r319,r320,r321,r322,r323],[r324,r325,r326,r327,r328,r329,r330,r331,r332,r333,r334,r335,r336,r337,r338,r339,r340,r341],[r342,r343,r344,r345,r346,r347,r348,r349,r350,r351,r352,r353,r354,r355,r356,r357,r358,r359],[r360,r361,r362,r363,r364,r365,r366,r367,r368,r369,r370,r371,r372,r373,r374,r375,r376,r377],[r378,r379,r380,r381,r382,r383,r384,r385,r386,r387,r388,r389,r390,r391,r392,r393,r394,r395],[r396,r397,r398,r399,r400,r401,r402,r403,r404,r405,r406,r407,r408,r409,r410,r411,r412,r413],[r414,r415,r416,r417,r418,r419,r420,r421,r422,r423,r424,r425,r426,r427,r428,r429,r430,r431],[r432,r433,r434,r435,r436,r437,r438,r439,r440,r441,r442,r443,r444,r445,r446,r447,r448,r449],[r450,r451,r452,r453,r454,r455,r456,r457,r458,r459,r460,r461,r462,r463,r464,r465,r466,r467],[r468,r469,r470,r471,r472,r473,r474,r475,r476,r477,r478,r479,r480,r481,r482,r483,r484,r485],[r486,r487,r488,r489,r490,r491,r492,r493,r494,r495,r496,r497,r498,r499,r500,r501,r502,r503]],[r504,r505,r506,r507,r508,r509,r510,r511])
+}
+
+/// An input of the transform's second half times the first layer's twiddle (see below).
+#[inline(always)]
+fn zf(x: felt252) -> felt252 {
+    x * 1479
+}
+
+#[inline(always)]
+fn zu(x: u16) -> felt252 {
+    let x: felt252 = x.into();
+    x * 1479
 }
