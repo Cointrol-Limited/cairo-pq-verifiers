@@ -25,4 +25,8 @@ pub mod roots_felt;
 pub mod roots_scaled;
 
 pub use engine::{NttConfig, intt, ntt, ntt_lazy, reduce_felt};
-pub use falcon512_fast::{ntt_falcon512_fast_u16_unchecked, ntt_falcon512_fast_unchecked};
+pub use falcon512_fast::{
+    LazyCoeff, ntt_falcon512_fast_u16_lazy_minus_unchecked, ntt_falcon512_fast_u16_lazy_unchecked,
+    ntt_falcon512_fast_u16_unchecked,
+    ntt_falcon512_fast_unchecked,
+};
