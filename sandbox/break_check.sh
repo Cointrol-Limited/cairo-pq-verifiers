@@ -5,7 +5,8 @@
 #
 # Downloads the record's patch (pvfast, read-only), builds a scratch tree from this working
 # tree with crates/*/src reset to the baseline and the patch applied, and runs the
-# rare-path (edge_), edge-input (edge_in_) and mutation (fuzz_) vectors offline. Prints
+# rare-path (edge_), edge-input (edge_in_), crafted zero-half key (zk_) and mutation (fuzz_)
+# vectors offline. Prints
 # every verdict that differs from the reference and a one-line summary.
 set -euo pipefail
 
@@ -34,9 +35,12 @@ docker run --rm --cap-drop ALL --security-opt no-new-privileges --pids-limit 102
   --network none -v falcon-sandbox-cache:/cache-ro:ro -v "$WORK:/work" falcon-sandbox:1 \
   sh -c 'cp -a /cache-ro/. "$HOME/.cache/" &&
     snforge test -p pqbench_falcon_512 edge_ --max-threads 3 > /work/edge.txt 2>&1;
-    snforge test -p pqbench_falcon_512 fuzz_ --max-threads 3 > /work/fuzz.txt 2>&1;
+    snforge test -p pqbench_falcon_512 zk_ --max-threads 3 > /work/zk.txt 2>&1;
+    snforge test -p pqbench_falcon_512 fuzz_ --max-threads 2 > /work/fuzz.txt 2>&1;
     echo "edge: $(grep -E "^Tests:" /work/edge.txt | tail -1)";
     grep -E "^\[FAIL\]" /work/edge.txt || true;
+    echo "zero-key: $(grep -E "^Tests:" /work/zk.txt | tail -1)";
+    grep -E "^\[FAIL\]" -A3 /work/zk.txt || true;
     echo "fuzz: $(grep -E "^Tests:" /work/fuzz.txt | tail -1), $(grep -c "^FUZZ" /work/fuzz.txt) vectors run";
     awk "/^FUZZ/ && \$3!=\$4 {print \"MISMATCH\", \$0}" /work/fuzz.txt;
     grep -E "^\[FAIL\]" -A3 /work/fuzz.txt | grep -v "^--" | head -20 || true'

@@ -13,6 +13,11 @@ its worst valid gas. Third-party records are built and run only in `sandbox/`.
 | Edge messages and salts, genuine signatures (`gen_edge_inputs.py`): message 0, 1, p−1, 2^128±1, 2^251−1, all-ones lanes; salt halves 0, 2^160−1, 2^32−1, all-ones 64-bit lanes | 32, all valid | All accepted |
 | Mutations of genuine signatures (`gen_fuzz.py`): every input felt set to 0, 1, p−1, 2^128±1, ±1, ±2^128, non-canonical re-encodings of the same digits (low/high half + q^9, last slot + q^8); salt-range edges; length ±1; direct-form signature; s1/t swapped | 2,990 (2 valid; HINT 1,948, ENCODING 982, NORM 36, SALT_RANGE 12, LENGTH 10) | Every verdict matches the reference |
 
+| Crafted keys (`gen_zero_keys.py`): genuine keypairs whose packed public key has chosen zero parts — high half of slot 0, 13 or 27, low half of slot 5, all of slot 9 (felt 0), the last slot, high halves of slots 2 and 20 — built by a short correction to g found with LLL + Babai so that NTT(g) vanishes there; two signatures each | 14, all valid | All accepted |
+
+Re-run with `sandbox/break_check.sh` on each later record: fj_eda0c8ca, fj_8b6abcc5,
+fj_8dc65143, fj_6b952f5c (24,730,370) — every vector matches the reference on all of them.
+
 **Gas of valid signatures by squeeze path** (local snforge, one verification):
 8-block ~23.85M; 9-block via syscall tail ~25.44M; 16+ missing after 8 blocks (Cairo 9th
 permutation) ~26.31M; syscall head tried but short of accepts, then the Cairo permutation
@@ -26,6 +31,10 @@ because `0 <= x < 2^137 < p`); the rotated Keccak state (value-dependent branche
 about 50/50, so every signature exercises both sides).
 
 ## Tools
+
+- `sandbox/break_check.sh JOB_ID` downloads a record's patch and runs every suite below
+  against it offline (about 10 minutes per record).
+- `pythonref/gen_zero_keys.py`: genuine keys with chosen all-zero key halves or slots.
 
 - `pythonref/gen_fuzz.py` writes `crates/falcon_512/tests/data/fuzz.txt` (gitignored) and a
   chunked harness that reads it with `snforge_std::fs::read_txt`; run with
