@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Check every new falcon.provably.fast record with the Break-track suite.
 #
-# Run by launchd (sandbox/com.cointrol.falcon-watch.plist) every two hours, or by hand.
-# Reads the leaderboard, runs sandbox/break_check.sh on each record not yet in
-# ~/.cache/falcon-sandbox/watch/checked.txt, appends results to watch.log, and posts a
-# macOS notification when a verdict differs from the reference or a check fails to run.
+# Runs from its own clone of the public repository (launchd cannot read ~/Documents):
+#   git clone -b cointrol/break https://github.com/Cointrol-Limited/cairo-pq-verifiers \
+#     ~/.cache/falcon-sandbox/watch/repo
+# and is started every two hours by sandbox/com.cointrol.falcon-watch.plist. Each run
+# fast-forwards the clone, reads the leaderboard, runs sandbox/break_check.sh on each record
+# not yet in ~/.cache/falcon-sandbox/watch/checked.txt, appends results to watch.log, and
+# posts a macOS notification when a verdict differs from the reference or a check fails.
 # Nothing is ever submitted: an attack job needs the owner's explicit approval.
 set -uo pipefail
-export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 W="$HOME/.cache/falcon-sandbox/watch"
-TREE="$W/tree"
 LOG="$W/watch.log"
 DONE="$W/checked.txt"
 mkdir -p "$W" && touch "$DONE"
@@ -22,29 +24,25 @@ notify() {
   osascript -e "display notification \"$1\" with title \"Falcon break watch\"" || true
 }
 
-# Dedicated worktree on cointrol/break, so the user's checkout can be on any branch.
-if [ ! -d "$TREE/.git" ] && [ ! -f "$TREE/.git" ]; then
-  git -C "$REPO" worktree add --force "$TREE" cointrol/break || { notify "worktree setup failed"; exit 1; }
-fi
-git -C "$TREE" checkout -q cointrol/break && git -C "$TREE" pull -q --ff-only 2>/dev/null || true
-mkdir -p "$TREE/pythonref" && ln -sfn "$REPO/pythonref/vendor" "$TREE/pythonref/vendor"
-if [ ! -s "$TREE/crates/falcon_512/tests/data/fuzz.txt" ]; then
-  (cd "$TREE" && "$REPO/pythonref/.venv/bin/python" pythonref/gen_fuzz.py --bases 2 --chunk 30) \
+git -C "$REPO" pull -q --ff-only || echo "pull failed; using the current checkout"
+[ -x "$REPO/pythonref/.venv/bin/python" ] && [ -f "$REPO/pythonref/vendor/falcon512.py" ] \
+  || "$REPO/pythonref/fetch.sh" || { notify "pythonref setup failed"; exit 1; }
+if [ ! -s "$REPO/crates/falcon_512/tests/data/fuzz.txt" ]; then
+  (cd "$REPO" && pythonref/.venv/bin/python pythonref/gen_fuzz.py --bases 2 --chunk 30) \
     || { notify "fuzz vector generation failed"; exit 1; }
 fi
 
 colima status >/dev/null 2>&1 || colima start || { notify "colima would not start"; exit 1; }
 
-ids=$(cd "$W" && uvx --python 3.12 pvfast remote falcon results --format human 2>&1 \
-  | grep -oE 'fj_[0-9a-f]{32}' | awk '!seen[$0]++')
+board=$(cd "$W" && uvx --python 3.12 pvfast remote falcon results --format human 2>&1)
+ids=$(echo "$board" | grep -oE 'fj_[0-9a-f]{32}' | awk '!seen[$0]++')
 [ -z "$ids" ] && { echo "no leaderboard (offline?)"; exit 0; }
-record=$(cd "$W" && uvx --python 3.12 pvfast remote falcon results --format human 2>&1 \
-  | sed -n 's/^Record: .*\(fj_[0-9a-f]\{32\}\).*/\1/p')
+record=$(echo "$board" | sed -n 's/^Record: .*\(fj_[0-9a-f]\{32\}\).*/\1/p')
 
 for id in $ids; do
   grep -qx "$id" "$DONE" && continue
   echo "--- $id"
-  out=$("$TREE/sandbox/break_check.sh" "$id" 2>&1 | grep -v '^warn\|^ -->')
+  out=$("$REPO/sandbox/break_check.sh" "$id" 2>&1 | grep -v '^warn\|^ -->')
   echo "$out"
   if echo "$out" | grep -q "MISMATCH\|\[FAIL\]"; then
     notify "Possible break in $id: verdict differs from the reference. See $LOG"
