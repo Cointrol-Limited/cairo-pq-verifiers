@@ -18,3 +18,5 @@ pq-accounts/signers/**/*-key.json
 
 **/tmp/
 **/my-falcon-key.json
+# pythonref: fetched third-party references
+pythonref/vendor/

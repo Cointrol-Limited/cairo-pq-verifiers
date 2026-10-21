@@ -18,8 +18,16 @@ Gas figures are snforge `l2_gas` (Sierra gas) unless noted.
 
 | Date | Commit | Change | `bench_verify_falcon_512_shake` (9-block) | 11:16 mix mean | Δ vs prev |
 |---|---|---|---|---|---|
-| 2026-10-21 | `bece5c0` | Baseline, unmodified | 50,190,408 | — (8-block fixtures not yet generated) | — |
+| 2026-10-21 | `bece5c0` | Baseline, unmodified | 50,190,408 | 48,393,519 (8: 45,818,918 · 9: 50,163,557) | — |
 
 Other baseline numbers from the same run:
 `bench_verify_falcon_512_shake_direct` 60,439,238;
 `bench_validate_falcon_512_shake` (account `__validate__`) 68,022,648.
+
+## Measuring
+
+`pythonref/mix_gas.py` measures `verify` (paired verify − base) over 27 local fixtures in
+the scorer's 11:16 mix of 8- and 9-block signatures (`pythonref/gen_mix_fixtures.py`).
+On the baseline it reads about 4.9k gas *below* the published per-class means, a
+near-constant offset, so compare deltas, not absolute values. Within a block class the
+spread is about ±12k gas.
