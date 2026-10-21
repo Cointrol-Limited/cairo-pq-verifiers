@@ -43,6 +43,19 @@ Record threshold is now 3,000 gas (scoring page), not the brief's 10,000.
 | Same, round 1 split into its own call | — | +31 steps per permutation | No |
 | `rot1x2` (AND + checked narrow) replaced by two `rotl1_c` on the split parities | — | +9.7k per permutation | No |
 
+| Squeeze: per-word top-nibble probe with one AND (`(even + 0x0010…) & 0x0100… == 0`), 8 candidates without `constrain` | — | mix +11.3k | No: `constrain` on the accept path is only ~3 steps + 1 RC |
+| s1/t slot split as `felt + 2^128` (always `Wide`, no Narrow/Wide merge, `Narrow` = non-canonical early return) | — | mix +9.5k (+1 step, +1 RC per slot) | No: `downcast` to `[1, q^9]` costs a second RC; the merge was only ~1–2 steps |
+| `u128_safe_divmod` instead of `bounded_int_div_rem` for digits | — | 4 RC per division (CASM) | No |
+
+Where the steps go (record fj_1f8963b6, 9-block fixture 11, `sandbox/stepprof.py`, exact from the
+VM trace): `bounded_int_div_rem` 67,613 (44%), `store_temp` 55,627 (36%), `bitwise` 19,346,
+`constrain` 4,813. `bounded_int_div_rem` is always 7 steps + 3 RC, quotient included, whatever
+the bounds. Most `store_temp`s materialise values that must be computed anyway (bitwise
+operands, NTT outputs, unpacked digit products); a bitwise output cannot feed the next
+bitwise input without a copy. Sierra gas exceeds the resource cost by 17,840 on an 8-block
+signature: 4,210 in hash-to-point (380 per permutation), ~6.4k in the s1/t unpackers
+(constrain-tree branch imbalance, ~8 gas per `constrain`), the rest diffuse.
+
 Falcon1024's SWAR packing adapted to the NTT (two half-polynomials per felt after a twist by
 ω^k, one 256-point transform for both): fits the bounds on paper, but needs 512 output splits,
 the same as packing s1 and t into one felt, which another participant measured at +146K.
