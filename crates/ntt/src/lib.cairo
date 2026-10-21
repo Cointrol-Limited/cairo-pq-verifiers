@@ -16,6 +16,10 @@
 //! fixed-parameter forward path for callers that already hold canonical Falcon-512
 //! coefficients. Its name makes the unchecked `[0, q)` input precondition explicit.
 
+#[derive(Copy,Drop)]
+pub struct L {
+pub value:felt252,
+}
 pub mod bitrev;
 pub mod engine;
 pub mod falcon512;
@@ -25,4 +29,8 @@ pub mod roots_felt;
 pub mod roots_scaled;
 
 pub use engine::{NttConfig, intt, ntt, ntt_lazy, reduce_felt};
-pub use falcon512_fast::{ntt_falcon512_fast_u16_unchecked, ntt_falcon512_fast_unchecked};
+pub use falcon512_fast::{
+LazyCoeff,ntt_falcon512_fast_u16_lazy_minus_unchecked,ntt_falcon512_fast_u16_lazy_unchecked,
+ntt_falcon512_fast_u16_unchecked,
+ntt_falcon512_fast_unchecked,
+};

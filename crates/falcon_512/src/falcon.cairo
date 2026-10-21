@@ -19,7 +19,8 @@
 
 use pqbench_ntt::engine::intt;
 use pqbench_ntt::falcon512::{PRODUCT_BITS, PRODUCT_BOUND_FELT, config};
-use pqbench_ntt::ntt_falcon512_fast_u16_unchecked;
+use pqbench_ntt::{LazyCoeff,ntt_falcon512_fast_u16_lazy_unchecked,ntt_falcon512_fast_u16_unchecked};
+use corelib_imports::integer::{U128sFromFelt252Result,u128s_from_felt252};
 use crate::zq::{Q32, center_sq, centered_difference_sq};
 
 /// Maximum allowed `||s0||^2 + ||s1||^2` for Falcon-512 (FIPS 206 / falcon.py sig_bound).
@@ -28,6 +29,151 @@ pub const SIG_BOUND_512: u64 = 34034726;
 /// The Falcon modulus as a u32 divisor.
 const Q32_NZ: NonZero<u32> = 12289;
 
+use corelib_imports::bounded_int::{
+AddHelper,BoundedInt,DivRemHelper,MulHelper,UnitInt,bounded_int,upcast,
+};
+#[feature("bounded-int-utils")]
+use core::internal::bounded_int::SubHelper;
+type QUnit=UnitInt<12289>;
+const Q_NZ_B:NonZero<QUnit> = 12289;
+#[inline(never)]
+fn q_cell()->NonZero<QUnit> {
+Q_NZ_B
+}
+#[derive(Copy,Drop)]
+pub(crate) struct HintConsts {
+q:NonZero<QUnit>,
+offset:felt252,
+inv_q:felt252,
+}
+#[inline(never)]
+pub(crate) fn hint_consts()->HintConsts {
+HintConsts { q:Q_NZ_B,offset:LAZY_HINT_OFFSET,inv_q:INV_Q }
+}
+type U16Product=BoundedInt<0,4294836225>;
+type SixQMinus=BoundedInt<8199,73734>;
+type HintCheck=BoundedInt<8199,4294909959>;
+type RemQ=BoundedInt<0,12288>;
+type U128B=BoundedInt<0,340282366920938463463374607431768211455>;
+const LAZY_HINT_OFFSET:felt252=5316911983139663491615228241121380889;
+type CenterOffset=BoundedInt<2054,67589>;
+type CenterSum=BoundedInt<2054,133124>;
+type Centered=BoundedInt<-6144,6144>;
+type CenteredSq=BoundedInt<-37748736,37748736>;
+impl MulU16U16 of MulHelper<u16,u16> {
+type Result=U16Product;
+}
+impl SubSixQU16 of SubHelper<UnitInt<73734>,u16> {
+type Result=SixQMinus;
+}
+impl AddProductSixQ of AddHelper<U16Product,SixQMinus> {
+type Result=HintCheck;
+}
+impl DivRemHintCheckQ of DivRemHelper<HintCheck,QUnit> {
+type DivT=BoundedInt<0,349492>;
+type RemT=RemQ;
+}
+impl DivRemU128Q of DivRemHelper<U128B,QUnit> {
+type DivT=BoundedInt<0,27689996494502275487295516920153650>;
+type RemT=RemQ;
+}
+impl AddU16CenterOffsetFirst of AddHelper<u16,UnitInt<67589>> {
+type Result=BoundedInt<67589,133124>;
+}
+impl SubCenterSumU16 of SubHelper<BoundedInt<67589,133124>,u16> {
+type Result=CenterSum;
+}
+impl SubCenterOffsetU16 of SubHelper<UnitInt<67589>,u16> {
+type Result=CenterOffset;
+}
+impl AddU16CenterOffset of AddHelper<u16,CenterOffset> {
+type Result=CenterSum;
+}
+impl DivRemCenterSumQ of DivRemHelper<CenterSum,QUnit> {
+type DivT=BoundedInt<0,10>;
+type RemT=RemQ;
+}
+impl SubRemHalf of SubHelper<RemQ,UnitInt<6144>> {
+type Result=Centered;
+}
+impl MulCentered of MulHelper<Centered,Centered> {
+type Result=CenteredSq;
+}
+#[inline(always)]
+fn lazy_product_difference_rem(a:u16,b:u16,c:LazyCoeff,q:NonZero<QUnit>)->felt252 {
+let product:felt252=bounded_int::mul(a,b).into();
+let x=product + (LAZY_HINT_OFFSET - c.value);
+let x:U128B=match u128s_from_felt252(x) {
+U128sFromFelt252Result::Narrow(low)=>upcast(low),
+U128sFromFelt252Result::Wide(_) => panic!("lazy hint check out of range"),
+};
+let (_,r)=bounded_int::div_rem(x,q);
+r.into()
+}
+type CenterShift=BoundedInt<6144,71679>;
+impl AddU16Half of AddHelper<u16,UnitInt<6144>> {
+type Result=CenterShift;
+}
+impl DivRemCenterShiftQ of DivRemHelper<CenterShift,QUnit> {
+type DivT=BoundedInt<0,5>;
+type RemT=RemQ;
+}
+type LazyProduct=BoundedInt<0,4181389724724491839037947176121567782359040>;
+type LazyOffset2=UnitInt<340282366920938463463374607431768217139>;
+const LAZY_OFFSET2:LazyOffset2=340282366920938463463374607431768217139;
+type LazyOffset2Minus=BoundedInt<5684,340282366920938463463374607431768217139>;
+type LazyCheck2=BoundedInt<5684,4181730007091412777501410550728999550576179>;
+impl MulU128Zq of MulHelper<U128B,RemQ> {
+type Result=LazyProduct;
+}
+impl SubLazyOffset2 of SubHelper<LazyOffset2,U128B> {
+type Result=LazyOffset2Minus;
+}
+impl AddLazyCheck2 of AddHelper<LazyProduct,LazyOffset2Minus> {
+type Result=LazyCheck2;
+}
+impl DivRemLazyCheck2Q of DivRemHelper<LazyCheck2,QUnit> {
+type DivT=BoundedInt<0,340282366920938463463374607431768211455>;
+type RemT=RemQ;
+}
+#[inline(always)]
+fn lazy_as_u128(c:LazyCoeff)->U128B {
+match u128s_from_felt252(c.value) {
+U128sFromFelt252Result::Narrow(low)=>upcast(low),
+U128sFromFelt252Result::Wide(_) => panic!("lazy NTT output out of range"),
+}
+}
+pub(crate) const INV_Q:felt252=0x590625348ee7b13ed5063a897278482929cf2104a53c8ebd06ba86c7dbd6164;
+#[inline(always)]
+pub(crate) fn hint_quotient(a:LazyCoeff,b:RemQ,c:LazyCoeff,k:HintConsts)->felt252 {
+let b:felt252=b.into();
+(a.value * b + (k.offset - c.value)) * k.inv_q
+}
+#[inline(always)]
+pub(crate) fn hint_quotient_pre(a:LazyCoeff,b:RemQ,c:LazyCoeff,k:HintConsts)->felt252 {
+let b:felt252=b.into();
+(a.value * b - c.value) * k.inv_q
+}
+#[inline(always)]
+pub(crate) fn hint_quotient_inv(a:LazyCoeff,b:RemQ,c:LazyCoeff)->felt252 {
+let b:felt252=b.into();
+(a.value * b - c.value) * INV_Q
+}
+#[inline(always)]
+fn center_sq_b(v:u16,q:NonZero<QUnit>)->felt252 {
+let half:UnitInt<6144> = 6144;
+let (_,r)=bounded_int::div_rem(bounded_int::add(v,half),q);
+let c=bounded_int::sub(r,half);
+bounded_int::mul(c,c).into()
+}
+#[inline(always)]
+fn centered_difference_sq_b(a:u16,b:u16,q:NonZero<QUnit>)->felt252 {
+let offset:UnitInt<67589> = 67589;
+let half:UnitInt<6144> = 6144;
+let (_,r)=bounded_int::div_rem(bounded_int::sub(bounded_int::add(a,offset),b),q);
+let c=bounded_int::sub(r,half);
+bounded_int::mul(c,c).into()
+}
 #[inline(always)]
 fn felts_to_u16(mut values: Span<felt252>) -> Array<u16> {
     let mut out: Array<u16> = array![];
@@ -81,10 +227,10 @@ pub(crate) fn verify_512_with_hint_u16(
     // Both spans came from canonical base-Q unpacking (or the public wrapper's documented
     // canonical-coefficient precondition), so the generated unchecked NTT is sound here.
     let s1_ntt = ntt_falcon512_fast_u16_unchecked(s1);
-    let hint_ntt = ntt_falcon512_fast_u16_unchecked(mul_hint);
+let hint_ntt=ntt_falcon512_fast_u16_lazy_unchecked(mul_hint);
 
     let mut s1_ntt_iter = s1_ntt.span();
-    let mut hint_ntt_iter = hint_ntt.span();
+let mut hint_ntt_iter=hint_ntt;
     let mut h_iter = h_ntt;
     let mut msg_iter = msg_point;
     let mut hint_iter = mul_hint;
@@ -94,6 +240,7 @@ pub(crate) fn verify_512_with_hint_u16(
     // centered-norm accumulation per coefficient.
     // Max acc = 512 * 2 * 6144^2 < 2^36, so the felt252 accumulator cannot wrap
     // and always fits u64.
+let qb=q_cell();
     let mut acc: felt252 = 0;
     let mut ok = true;
     while let Some(s1n_c) = s1_ntt_iter.multi_pop_front::<16>() {
@@ -128,22 +275,22 @@ pub(crate) fn verify_512_with_hint_u16(
             .unbox();
         // s1n*h + q - hn has zero remainder iff the two NTT coordinates agree mod q,
         // which by bijectivity binds mul_hint to s1*h.
-        let (_, r0) = DivRem::div_rem(product_difference(s1n0, h0, hn0), Q32_NZ);
-        let (_, r1) = DivRem::div_rem(product_difference(s1n1, h1, hn1), Q32_NZ);
-        let (_, r2) = DivRem::div_rem(product_difference(s1n2, h2, hn2), Q32_NZ);
-        let (_, r3) = DivRem::div_rem(product_difference(s1n3, h3, hn3), Q32_NZ);
-        let (_, r4) = DivRem::div_rem(product_difference(s1n4, h4, hn4), Q32_NZ);
-        let (_, r5) = DivRem::div_rem(product_difference(s1n5, h5, hn5), Q32_NZ);
-        let (_, r6) = DivRem::div_rem(product_difference(s1n6, h6, hn6), Q32_NZ);
-        let (_, r7) = DivRem::div_rem(product_difference(s1n7, h7, hn7), Q32_NZ);
-        let (_, r8) = DivRem::div_rem(product_difference(s1n8, h8, hn8), Q32_NZ);
-        let (_, r9) = DivRem::div_rem(product_difference(s1n9, h9, hn9), Q32_NZ);
-        let (_, r10) = DivRem::div_rem(product_difference(s1n10, h10, hn10), Q32_NZ);
-        let (_, r11) = DivRem::div_rem(product_difference(s1n11, h11, hn11), Q32_NZ);
-        let (_, r12) = DivRem::div_rem(product_difference(s1n12, h12, hn12), Q32_NZ);
-        let (_, r13) = DivRem::div_rem(product_difference(s1n13, h13, hn13), Q32_NZ);
-        let (_, r14) = DivRem::div_rem(product_difference(s1n14, h14, hn14), Q32_NZ);
-        let (_, r15) = DivRem::div_rem(product_difference(s1n15, h15, hn15), Q32_NZ);
+let r0=lazy_product_difference_rem(s1n0,h0,hn0,qb);
+let r1=lazy_product_difference_rem(s1n1,h1,hn1,qb);
+let r2=lazy_product_difference_rem(s1n2,h2,hn2,qb);
+let r3=lazy_product_difference_rem(s1n3,h3,hn3,qb);
+let r4=lazy_product_difference_rem(s1n4,h4,hn4,qb);
+let r5=lazy_product_difference_rem(s1n5,h5,hn5,qb);
+let r6=lazy_product_difference_rem(s1n6,h6,hn6,qb);
+let r7=lazy_product_difference_rem(s1n7,h7,hn7,qb);
+let r8=lazy_product_difference_rem(s1n8,h8,hn8,qb);
+let r9=lazy_product_difference_rem(s1n9,h9,hn9,qb);
+let r10=lazy_product_difference_rem(s1n10,h10,hn10,qb);
+let r11=lazy_product_difference_rem(s1n11,h11,hn11,qb);
+let r12=lazy_product_difference_rem(s1n12,h12,hn12,qb);
+let r13=lazy_product_difference_rem(s1n13,h13,hn13,qb);
+let r14=lazy_product_difference_rem(s1n14,h14,hn14,qb);
+let r15=lazy_product_difference_rem(s1n15,h15,hn15,qb);
         // Remainders are non-negative, so the sum is zero iff all sixteen are.
         if r0
             + r1
@@ -176,22 +323,22 @@ pub(crate) fn verify_512_with_hint_u16(
             .multi_pop_front::<16>()
             .unwrap())
             .unbox();
-        acc += centered_difference_sq(m0, t0) + center_sq(v0);
-        acc += centered_difference_sq(m1, t1) + center_sq(v1);
-        acc += centered_difference_sq(m2, t2) + center_sq(v2);
-        acc += centered_difference_sq(m3, t3) + center_sq(v3);
-        acc += centered_difference_sq(m4, t4) + center_sq(v4);
-        acc += centered_difference_sq(m5, t5) + center_sq(v5);
-        acc += centered_difference_sq(m6, t6) + center_sq(v6);
-        acc += centered_difference_sq(m7, t7) + center_sq(v7);
-        acc += centered_difference_sq(m8, t8) + center_sq(v8);
-        acc += centered_difference_sq(m9, t9) + center_sq(v9);
-        acc += centered_difference_sq(m10, t10) + center_sq(v10);
-        acc += centered_difference_sq(m11, t11) + center_sq(v11);
-        acc += centered_difference_sq(m12, t12) + center_sq(v12);
-        acc += centered_difference_sq(m13, t13) + center_sq(v13);
-        acc += centered_difference_sq(m14, t14) + center_sq(v14);
-        acc += centered_difference_sq(m15, t15) + center_sq(v15);
+acc += centered_difference_sq_b(m0,t0,qb) + center_sq_b(v0,qb);
+acc += centered_difference_sq_b(m1,t1,qb) + center_sq_b(v1,qb);
+acc += centered_difference_sq_b(m2,t2,qb) + center_sq_b(v2,qb);
+acc += centered_difference_sq_b(m3,t3,qb) + center_sq_b(v3,qb);
+acc += centered_difference_sq_b(m4,t4,qb) + center_sq_b(v4,qb);
+acc += centered_difference_sq_b(m5,t5,qb) + center_sq_b(v5,qb);
+acc += centered_difference_sq_b(m6,t6,qb) + center_sq_b(v6,qb);
+acc += centered_difference_sq_b(m7,t7,qb) + center_sq_b(v7,qb);
+acc += centered_difference_sq_b(m8,t8,qb) + center_sq_b(v8,qb);
+acc += centered_difference_sq_b(m9,t9,qb) + center_sq_b(v9,qb);
+acc += centered_difference_sq_b(m10,t10,qb) + center_sq_b(v10,qb);
+acc += centered_difference_sq_b(m11,t11,qb) + center_sq_b(v11,qb);
+acc += centered_difference_sq_b(m12,t12,qb) + center_sq_b(v12,qb);
+acc += centered_difference_sq_b(m13,t13,qb) + center_sq_b(v13,qb);
+acc += centered_difference_sq_b(m14,t14,qb) + center_sq_b(v14,qb);
+acc += centered_difference_sq_b(m15,t15,qb) + center_sq_b(v15,qb);
     }
     if !ok {
         return false;
@@ -200,6 +347,7 @@ pub(crate) fn verify_512_with_hint_u16(
     norm <= SIG_BOUND_512
 }
 
+pub(crate) const HINT_NTT_OFFSET:felt252=LAZY_HINT_OFFSET;
 /// Verify without a hint (direct variant): compute `s1 * h` on-chain as
 /// `INTT(NTT(s1) ∘ h_ntt)` — 1 NTT + 1 INTT because the public key is already stored in
 /// the NTT domain — then accept iff `||msg_point - s1*h||^2 + ||s1||^2 <= SIG_BOUND_512`.
