@@ -5,7 +5,7 @@ FROM ubuntu:24.04
 
 ARG SCARB=2.18.0
 ARG SNFORGE=0.59.0
-ARG USC=2.10.2
+ARG USC=2.9.1
 ARG PROFILER=0.16.0
 ARG TRIPLE=aarch64-unknown-linux-gnu
 

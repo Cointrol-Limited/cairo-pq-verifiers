@@ -31,6 +31,22 @@ Other baseline numbers from the same run:
 `bench_verify_falcon_512_shake_direct` 60,439,238;
 `bench_validate_falcon_512_shake` (account `__validate__`) 68,022,648.
 
+## Experiments on record fj_1f8963b6 (24,951,254; local mix 24,948,995)
+
+Patch 255,193 / 262,144 bytes; account class 4,021,551 / 4,089,446 bytes (`sandbox/check.sh`).
+Record threshold is now 3,000 gas (scoring page), not the brief's 10,000.
+
+| Idea | Steps-model estimate | Sierra gas, measured | Verdict |
+|---|---|---|---|
+| Sparse theta for the absorb permutation's round 1 (13 bitwise, 7 splits fewer), selected by a `sparse` flag in `keccak_f1600_lanes` | −13.3k | mix +4,100 | No: a function with no gas counter is charged its most expensive branch, so the sparse path saves nothing and the flag costs every permutation |
+| Same, with a no-op loop to give the permutation its own gas counter | — | absorb −9.1k, each other permutation +7.4k | No |
+| Same, round 1 split into its own call | — | +31 steps per permutation | No |
+| `rot1x2` (AND + checked narrow) replaced by two `rotl1_c` on the split parities | — | +9.7k per permutation | No |
+
+Falcon1024's SWAR packing adapted to the NTT (two half-polynomials per felt after a twist by
+ω^k, one 256-point transform for both): fits the bounds on paper, but needs 512 output splits,
+the same as packing s1 and t into one felt, which another participant measured at +146K.
+
 ## Measuring
 
 `pythonref/mix_gas.py` measures `verify` (paired verify − base) over 27 local fixtures in
