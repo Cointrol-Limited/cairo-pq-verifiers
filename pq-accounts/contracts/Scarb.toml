@@ -11,6 +11,7 @@ starknet.workspace = true
 pqbench_interface.workspace = true
 pqbench_ecdsa_stark = { path = "../../crates/ecdsa_stark" }
 pqbench_falcon_512 = { path = "../../crates/falcon_512" }
+pqbench_falcon_1024 = { path = "../../crates/falcon_1024" }
 
 [[target.starknet-contract]]
 allowed-libfuncs-list.name = "experimental"

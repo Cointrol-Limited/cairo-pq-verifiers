@@ -3,6 +3,7 @@ members = [
     "crates/bench_interface",
     "crates/ecdsa_stark",
     "crates/falcon_512",
+    "crates/falcon_1024",
     "crates/ml_dsa_44",
     "crates/poseidon_wots",
     "crates/bench_targets",

@@ -21,6 +21,7 @@ name = "pq_accounts"
 version = "0.1.0"
 dependencies = [
  "pqbench_ecdsa_stark",
+ "pqbench_falcon_1024",
  "pqbench_falcon_512",
  "pqbench_interface",
 ]
@@ -31,6 +32,15 @@ version = "0.1.0"
 dependencies = [
  "openzeppelin_testing",
  "pqbench_interface",
+ "snforge_std",
+]
+
+[[package]]
+name = "pqbench_falcon_1024"
+version = "0.1.0"
+dependencies = [
+ "pqbench_interface",
+ "pqbench_ntt",
  "snforge_std",
 ]
 
