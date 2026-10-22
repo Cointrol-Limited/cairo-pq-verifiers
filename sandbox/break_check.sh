@@ -30,6 +30,10 @@ rm -rf "$WORK/crates/falcon_512/src" "$WORK/crates/ntt/src"
 git -C "$REPO" archive bece5c07eeea5784e570c01108ec000d2d04ae40 crates/falcon_512/src crates/ntt/src \
   | tar -x -C "$WORK"
 git -C "$WORK" init -q && git -C "$WORK" apply --whitespace=nowarn "$P" && rm -rf "$WORK/.git"
+# Only the Break suites are run: drop the other integration tests so the test crate compiles
+# within the container's memory (newer records alone take ~6 GB to build with everything).
+(cd "$WORK/crates/falcon_512/tests" && rm -f bench_mix.cairo mix_fixtures.cairo bench_blake.cairo \
+  bench_poseidon.cairo bench_shake.cairo)
 
 docker run --rm --cap-drop ALL --security-opt no-new-privileges --pids-limit 1024 --memory 6g \
   --network none -v falcon-sandbox-cache:/cache-ro:ro -v "$WORK:/work" falcon-sandbox:1 \
