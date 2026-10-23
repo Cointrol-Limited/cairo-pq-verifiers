@@ -18,3 +18,15 @@ pq-accounts/signers/**/*-key.json
 
 **/tmp/
 **/my-falcon-key.json
+# pythonref: fetched third-party references
+pythonref/vendor/
+
+# Break-track fuzz data (regenerate with pythonref/gen_fuzz.py)
+crates/falcon_512/tests/data/
+pythonref/fixtures/fuzz.json
+crates/falcon_512/tests/bench_fuzz.cairo
+
+# Falcon-1024 Break suite: regenerable data and cached test keypairs (private keys)
+crates/falcon_1024/tests/data/
+crates/falcon_1024/tests/bench_fuzz1k.cairo
+pythonref/fixtures/keys1024.json

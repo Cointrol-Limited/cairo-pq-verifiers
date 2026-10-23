@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.cointrol.falcon-watch</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/paulangusbark/.cache/falcon-sandbox/watch/repo/sandbox/watch_records.sh</string></array>
+  <key>StartInterval</key><integer>7200</integer>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/Users/paulangusbark/.cache/falcon-sandbox/watch/launchd.out</string>
+  <key>StandardErrorPath</key><string>/Users/paulangusbark/.cache/falcon-sandbox/watch/launchd.err</string>
+</dict>
+</plist>
